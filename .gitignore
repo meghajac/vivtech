@@ -1,0 +1,70 @@
+# --------------------------
+# STM32CubeIDE files
+# --------------------------
+*.launch
+*.project
+*.cproject
+*.mxproject
+.metadata/
+.settings/
+
+# Build output folders
+/Debug/
+/Release/
+/build/
+
+# Object and binary files
+*.o
+*.d
+*.elf
+*.bin
+*.hex
+*.map
+
+# Backup and swap files
+*~
+*.bak
+*.swp
+
+# IDE-specific folders
+.vscode/
+.idea/
+
+# CubeMX backup files
+*.ioc.bak
+
+# --------------------------
+# Python files
+# --------------------------
+# Bytecode files
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# Python logs and temp files
+*.log
+*.pkl
+*.sqlite3
+
+# --------------------------
+# Altium Designer files
+# --------------------------
+# Auto-generated and temporary files
+*.SchDoc.PrjPCBBackup*
+*.PcbDoc.PrjPCBBackup*
+*.IntLib.PrjPCBBackup*
+*.OutJob
+*.CacheLib
+*.PrjPCBBackup
+*.DsnAutoSave
+*.SVN
+*.XO
+*.TMP
+*.bak
+
+# Ignore Altium project workspace temp
+*.PcbPrj/Temp/
