@@ -1,0 +1,6 @@
+This is a running note of important information for the development of the SPI TFT Module.
+
+Important Documentation:
+User Manual: https://www.elecrow.com/download/product/DLS25040B/4.0inch_SPI_Module_User_Manual.pdf
+LVGL embedded graphics library: https://github.com/lvgl/lvgl
+
