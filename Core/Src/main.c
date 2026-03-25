@@ -18,10 +18,12 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-#include "stdio.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "stdio.h"
+#include "string.h"
+
 #include "ov5640.h"
 #include "ov5640_reg.h"
 
@@ -34,6 +36,12 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define OV5640_ADDR 0x3C << 1
+#define FRAME_WIDTH 160
+#define FRAME_HEIGHT 120
+#define FRAME_PIXELS (FRAME_WIDTH * FRAME_HEIGHT)
+#define FRAME_BYTES (FRAME_PIXELS * 2)
+#define FRAME_WORDS (FRAME_BYTES / 4)
 
 /* USER CODE END PD */
 
@@ -44,24 +52,124 @@
 
 /* Private variables ---------------------------------------------------------*/
 DCMI_HandleTypeDef hdcmi;
+DMA_HandleTypeDef hdma_dcmi;
+
+I2C_HandleTypeDef hi2c1;
 
 UART_HandleTypeDef hlpuart1;
 
 /* USER CODE BEGIN PV */
+
+OV5640_Object_t cam_obj;
+OV5640_IO_t cam_io;
+
+static uint16_t frame[FRAME_PIXELS];
+volatile uint8_t frame_done = 0;
 
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
+static void MX_DMA_Init(void);
 static void MX_DCMI_Init(void);
 static void MX_LPUART1_UART_Init(void);
+static void MX_I2C1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+static int32_t CAM_Init(void) {
+	return OV5640_OK;
+}
+
+static int32_t CAM_DeInit(void) {
+	return OV5640_OK;
+}
+
+int32_t CAM_I2C_Write(uint16_t addr, uint16_t reg, uint8_t *data, uint16_t len) {
+    if (HAL_I2C_Mem_Write(&hi2c1, addr, reg, I2C_MEMADD_SIZE_16BIT, data, len, 100) == HAL_OK)
+    	return OV5640_OK;
+
+    return OV5640_ERROR;
+
+}
+
+int32_t CAM_I2C_Read(uint16_t addr, uint16_t reg, uint8_t *data, uint16_t len) {
+	if (HAL_I2C_Mem_Read(&hi2c1, addr, reg, I2C_MEMADD_SIZE_16BIT, data, len, 100) == HAL_OK)
+		return OV5640_OK;
+
+	return OV5640_ERROR;
+}
+
+int32_t CAM_Get_Tick(void) {
+	return (int32_t) HAL_GetTick();
+}
+
+//typedef struct
+//{
+//  OV5640_Init_Func          Init;
+//  OV5640_DeInit_Func        DeInit;
+//  uint16_t                  Address;
+//  OV5640_WriteReg_Func      WriteReg;
+//  OV5640_ReadReg_Func       ReadReg;
+//  OV5640_GetTick_Func       GetTick;
+//} OV5640_IO_t;
+void init_cam_objects(uint32_t Resolution, uint32_t PixelFormat) {
+	memset(&cam_obj, 0, sizeof(cam_obj));
+	memset(&cam_io, 0, sizeof(cam_io));
+
+	cam_obj.Mode = PARALLEL_MODE;
+	cam_obj.VirtualChannelID = 0;
+
+	cam_io.Init     = CAM_Init;
+	cam_io.DeInit   = CAM_DeInit;
+	cam_io.Address  = OV5640_ADDR;
+	cam_io.WriteReg = CAM_I2C_Write;
+    cam_io.ReadReg  = CAM_I2C_Read;
+    cam_io.GetTick  = CAM_Get_Tick;
+
+	OV5640_RegisterBusIO(&cam_obj, &cam_io);
+
+	uint32_t chip_id = INT32_MAX;
+	if (OV5640_ReadID(&cam_obj, &chip_id) == OV5640_OK) {
+		printf("chip_id valid (0x%lX)\n", chip_id);
+	} else {
+		printf("chip_id invalid (0x%lX)\n", chip_id);
+		return;
+	} // TODO: return ERROR and handle it in main
+
+	if (OV5640_Init(&cam_obj, Resolution, PixelFormat) == OV5640_ERROR) {
+		printf("camera initialization failed\n");
+	}
+}
+
+void HAL_DCMI_FrameEventCallback(DCMI_HandleTypeDef *hdcmi) {
+	frame_done = 1;
+}
+
+void capture_img() {
+	  frame_done = 0;
+	  if (HAL_DCMI_Start_DMA(&hdcmi, DCMI_MODE_SNAPSHOT, (uint32_t) frame, FRAME_WORDS) != HAL_OK) {
+	      printf("DCMI start failed\n");
+	  }
+
+	  uint32_t start = HAL_GetTick();
+	  while (!frame_done) {
+		  if ((HAL_GetTick() - start) > 1000) {
+		  	  printf("frame timeout\n");
+		  	  break;
+		  }
+	  }
+
+	  for (uint32_t i = 0; i < FRAME_WIDTH; ++i) {
+			  printf("%04X ", frame[i]);
+	  }
+
+	  printf("\n");
+}
 
 /* USER CODE END 0 */
 
@@ -94,11 +202,20 @@ int main(void)
 
   /* Initialize all configured peripherals */
   MX_GPIO_Init();
+  MX_DMA_Init();
   MX_DCMI_Init();
   MX_LPUART1_UART_Init();
+  MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
-  OV5640_Object_t cam_obj;
-  int32_t cam_init_sig = OV5640_Init(&cam_obj, 0, 0);
+
+  HAL_NVIC_SetPriority(DCMI_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DCMI_IRQn);
+
+  init_cam_objects(OV5640_R160x120, OV5640_RGB565);
+  OV5640_ColorbarModeConfig(&cam_obj, COLORBAR_MODE_ENABLE);
+  OV5640_Start(&cam_obj);
+
+  capture_img();
 
   /* USER CODE END 2 */
 
@@ -107,7 +224,6 @@ int main(void)
   while (1)
   {
     /* USER CODE END WHILE */
-	  printf("%lu\n", cam_init_sig);
 
     /* USER CODE BEGIN 3 */
   }
@@ -176,8 +292,8 @@ static void MX_DCMI_Init(void)
   hdcmi.Instance = DCMI;
   hdcmi.Init.SynchroMode = DCMI_SYNCHRO_HARDWARE;
   hdcmi.Init.PCKPolarity = DCMI_PCKPOLARITY_FALLING;
-  hdcmi.Init.VSPolarity = DCMI_VSPOLARITY_LOW;
-  hdcmi.Init.HSPolarity = DCMI_HSPOLARITY_LOW;
+  hdcmi.Init.VSPolarity = DCMI_VSPOLARITY_HIGH;
+  hdcmi.Init.HSPolarity = DCMI_HSPOLARITY_HIGH;
   hdcmi.Init.CaptureRate = DCMI_CR_ALL_FRAME;
   hdcmi.Init.ExtendedDataMode = DCMI_EXTEND_DATA_8B;
   hdcmi.Init.JPEGMode = DCMI_JPEG_DISABLE;
@@ -192,6 +308,54 @@ static void MX_DCMI_Init(void)
   /* USER CODE BEGIN DCMI_Init 2 */
 
   /* USER CODE END DCMI_Init 2 */
+
+}
+
+/**
+  * @brief I2C1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C1_Init(void)
+{
+
+  /* USER CODE BEGIN I2C1_Init 0 */
+
+  /* USER CODE END I2C1_Init 0 */
+
+  /* USER CODE BEGIN I2C1_Init 1 */
+
+  /* USER CODE END I2C1_Init 1 */
+  hi2c1.Instance = I2C1;
+  hi2c1.Init.Timing = 0x00100D14;
+  hi2c1.Init.OwnAddress1 = 0;
+  hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c1.Init.OwnAddress2 = 0;
+  hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c1, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c1, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C1_Init 2 */
+
+  /* USER CODE END I2C1_Init 2 */
 
 }
 
@@ -240,6 +404,23 @@ static void MX_LPUART1_UART_Init(void)
   /* USER CODE BEGIN LPUART1_Init 2 */
 
   /* USER CODE END LPUART1_Init 2 */
+
+}
+
+/**
+  * Enable DMA controller clock
+  */
+static void MX_DMA_Init(void)
+{
+
+  /* DMA controller clock enable */
+  __HAL_RCC_DMAMUX1_CLK_ENABLE();
+  __HAL_RCC_DMA1_CLK_ENABLE();
+
+  /* DMA interrupt init */
+  /* DMA1_Channel1_IRQn interrupt configuration */
+  HAL_NVIC_SetPriority(DMA1_Channel1_IRQn, 0, 0);
+  HAL_NVIC_EnableIRQ(DMA1_Channel1_IRQn);
 
 }
 
@@ -436,20 +617,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB3 PB4 PB5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5;
+  /*Configure GPIO pins : PB3 PB4 */
+  GPIO_InitStruct.Pin = GPIO_PIN_3|GPIO_PIN_4;
   GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   GPIO_InitStruct.Alternate = GPIO_AF6_SPI3;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PB8 PB9 */
-  GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
   HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pin : PE0 */
@@ -476,6 +649,7 @@ PUTCHAR_PROTOTYPE
   HAL_UART_Transmit(&hlpuart1, (uint8_t *)&ch, 1, 0xFFFF);
   return ch;
 }
+
 /* USER CODE END 4 */
 
 /**
