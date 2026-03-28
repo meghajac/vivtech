@@ -1,0 +1,10 @@
+18:36:39 **** Incremental Build of configuration Debug for project vivtech_heaterfan ****
+make -j12 all 
+arm-none-eabi-size  vivtech_heaterfan.elf 
+   text	   data	    bss	    dec	    hex	filename
+  46692	    104	   3912	  50708	   c614	vivtech_heaterfan.elf
+Finished building: default.size.stdout
+ 
+
+18:36:40 Build Finished. 0 errors, 0 warnings. (took 426ms)
+

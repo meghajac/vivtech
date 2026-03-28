@@ -1,0 +1,17 @@
+18:42:02 **** Incremental Build of configuration Debug for project vivtech ****
+make -j12 all 
+arm-none-eabi-gcc "../Core/Src/main.c" -mcpu=cortex-m4 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32L4R5xx -c -I../Core/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32L4xx/Include -I../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Core/Src/main.d" -MT"Core/Src/main.o" --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -o "Core/Src/main.o"
+arm-none-eabi-gcc -o "vivtech.elf" @"objects.list"   -mcpu=cortex-m4 -T"C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech\STM32L4R5ZITXP_FLASH.ld" --specs=nosys.specs -Wl,-Map="vivtech.map" -Wl,--gc-sections -static --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -u _printf_float -Wl,--start-group -lc -lm -Wl,--end-group
+Finished building target: vivtech.elf
+ 
+arm-none-eabi-size  vivtech.elf 
+arm-none-eabi-objdump -h -S vivtech.elf  > "vivtech.list"
+   text	   data	    bss	    dec	    hex	filename
+  58952	    468	   3908	  63328	   f760	vivtech.elf
+Finished building: default.size.stdout
+ 
+Finished building: vivtech.list
+ 
+
+18:42:03 Build Finished. 0 errors, 0 warnings. (took 1s.688ms)
+

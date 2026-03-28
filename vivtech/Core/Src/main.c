@@ -166,16 +166,25 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
+	  printf("System alive\r\n");
+
+	      if (HAL_UART_Receive(&hlpuart1, &rx, 1, 100) == HAL_OK)
+	      {
+	          if (rx == '1') {
+	              HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_SET);
+	              printf("RELAY ON\r\n");
+	          }
+	          else if (rx == '0') {
+	              HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET);
+	              printf("RELAY OFF\r\n");
+	          }
+	      }
+
+	      HAL_Delay(1000);
+
+
     /* USER CODE END WHILE */
-	  HAL_UART_Receive(&hlpuart1, &rx, 1, HAL_MAX_DELAY);
-	  if (rx == '1') {
-	     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_SET);
-	     printf("RELAY ON\r\n");
-	  }
-	  else if (rx == '0') {
-		  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_3, GPIO_PIN_RESET);
-	      printf("RELAY OFF\r\n");
-	  }
+
     /* USER CODE BEGIN 3 */
   }
   /* USER CODE END 3 */
