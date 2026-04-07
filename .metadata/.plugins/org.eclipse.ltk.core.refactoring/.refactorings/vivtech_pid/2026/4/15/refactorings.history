@@ -1,0 +1,4 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<session version="1.0">
+<refactoring comment="Rename resource &apos;vivtech_pid/Core/Inc/pid&apos; to &apos;pid.h&apos;" description="Rename resource &apos;pid&apos;" flags="7" id="org.eclipse.ltk.core.refactoring.rename.resource" input="Core/Inc/pid" name="pid.h" stamp="1775583993671" updateReferences="true"/>
+</session>
