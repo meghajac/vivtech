@@ -1,0 +1,19 @@
+if (HAL_GPIO_ReadPin(GPIOB, GPIO_PIN_10) == GPIO_PIN_RESET)
+{
+    ST7796_FillScreen(ST7796_GREEN);
+}
+else
+{
+    ST7796_FillScreen(ST7796_RED);
+}
+HAL_Delay(50);
+
+
+
+uint16_t x, y;
+
+if (Touch_GetPoint(&x, &y))
+{
+    ST7796_FillScreen(ST7796_BLACK);
+    ST7796_FillRect(x - 4, y - 4, 8, 8, ST7796_YELLOW);
+}
