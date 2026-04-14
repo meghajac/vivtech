@@ -1,0 +1,42 @@
+2026-04-11 05:14:30,549 [INFO] WebApp:194 - Connection lost
+2026-04-11 23:24:33,264 [INFO] WebApp:191 - Connection restablished
+2026-04-11 23:24:49,065 [INFO] UtilMem:75 - End SaveConfig() Used Memory: 968165976 Bytes (1073741824)
+2026-04-11 23:24:52,489 [INFO] UtilMem:75 - End SaveConfig() Used Memory: 1053136680 Bytes (1073741824)
+2026-04-11 23:24:53,764 [INFO] UtilMem:75 - End SaveConfig() Used Memory: 994544848 Bytes (1073741824)
+2026-04-11 23:24:54,637 [INFO] BlockDiagram:2775 - set Specific Code input for plugin: SYS
+2026-04-11 23:24:54,637 [INFO] BlockDiagram:2775 - set Specific Code input for plugin: RCC
+2026-04-11 23:24:54,638 [INFO] BlockDiagram:2775 - set Specific Code input for plugin: LPUART
+2026-04-11 23:24:54,638 [INFO] BlockDiagram:2775 - set Specific Code input for plugin: USB_OTG_FS
+2026-04-11 23:24:54,638 [INFO] BlockDiagram:2775 - set Specific Code input for plugin: NVIC
+2026-04-11 23:24:54,639 [INFO] BlockDiagram:2775 - set Specific Code input for plugin: USART
+2026-04-11 23:24:54,639 [INFO] BlockDiagram:2775 - set Specific Code input for plugin: USART
+2026-04-11 23:24:54,640 [INFO] BlockDiagram:2775 - set Specific Code input for plugin: GPIO
+2026-04-11 23:24:54,708 [INFO] CodeGenerator:892 - code generatio: config db path: C:\ST\STM32CubeIDE_1.19.0\STM32CubeIDE\plugins\com.st.stm32cube.common.mx_6.15.0.202507011659\\db\
+2026-04-11 23:24:54,918 [INFO] CodeEngine:265 - oldGeneratedFile, C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\MXTmpFiles\license.tmp_save
+2026-04-11 23:24:55,543 [INFO] CodeEngine:289 - Generated code: C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\MXTmpFiles\license.tmp
+2026-04-11 23:24:55,842 [INFO] CodeEngine:265 - oldGeneratedFile, C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\MXTmpFiles\gpio.tmp_save
+2026-04-11 23:24:56,259 [INFO] CodeEngine:289 - Generated code: C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\MXTmpFiles\gpio.tmp
+2026-04-11 23:24:57,418 [WARN] IPConfigManager:3238 - Warning: the RefConfig PWREx_EnableUSBVoltageDetector is not available in your config.xml file
+2026-04-11 23:24:57,478 [INFO] CodeEngine:265 - oldGeneratedFile, C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\Core\Src\stm32l4xx_it.c_save
+2026-04-11 23:24:58,982 [INFO] CodeEngine:289 - Generated code: C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\Core\Src\stm32l4xx_it.c
+2026-04-11 23:24:59,048 [INFO] CodeEngine:265 - oldGeneratedFile, C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\Core\Inc\stm32l4xx_it.h_save
+2026-04-11 23:24:59,343 [INFO] CodeEngine:289 - Generated code: C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\Core\Inc\stm32l4xx_it.h
+2026-04-11 23:24:59,403 [INFO] CodeEngine:265 - oldGeneratedFile, C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\Core\Src\stm32l4xx_hal_msp.c_save
+2026-04-11 23:24:59,980 [INFO] CodeEngine:289 - Generated code: C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\Core\Src\stm32l4xx_hal_msp.c
+2026-04-11 23:25:00,007 [INFO] CodeEngine:265 - oldGeneratedFile, C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\MXTmpFiles\system.tmp_save
+2026-04-11 23:25:00,201 [INFO] CodeEngine:289 - Generated code: C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\MXTmpFiles\system.tmp
+2026-04-11 23:25:00,387 [INFO] CodeEngine:321 - oldGeneratedFile, C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\Core\Inc\stm32l4xx_hal_conf.h_save
+2026-04-11 23:25:00,684 [INFO] CodeEngine:345 - Generated code: C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\Core\Inc\stm32l4xx_hal_conf.h
+2026-04-11 23:25:00,801 [INFO] ApiDbMcu:532 - Load IP Config File for USART2
+2026-04-11 23:25:00,805 [WARN] IPConfigManager:3811 - IP not found : USB_OTG
+2026-04-11 23:25:00,809 [WARN] CodeGenerator:4259 - IP not found : null
+2026-04-11 23:25:00,845 [INFO] CodeEngine:265 - oldGeneratedFile, C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\Core\Inc\main.h_save
+2026-04-11 23:25:01,270 [INFO] CodeEngine:289 - Generated code: C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\Core\Inc\main.h
+2026-04-11 23:25:01,297 [INFO] CodeEngine:265 - oldGeneratedFile, C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\Core\Src\main.c_save
+2026-04-11 23:25:01,591 [INFO] CodeEngine:289 - Generated code: C:\Users\megha\OneDrive\Desktop\eecs373\FinalProject\vivtech\vivtech_bluetooth\Core\Src\main.c
+2026-04-11 23:25:02,583 [INFO] ProjectBuilder:3606 - Time for Copy HAL[1] : 708mS.
+2026-04-11 23:25:02,598 [INFO] ProjectBuilder:5216 - Project Generator version: 4.7.0-B52
+2026-04-11 23:25:02,767 [INFO] ConfigFileManager:1595 - The Die is : DIE470
+2026-04-11 23:25:15,951 [INFO] ProjectBuilder:5496 - Time for Generating toolchain IDE Files: 13353mS.
+2026-04-11 23:25:15,976 [INFO] ProjectBuilder:3463 - Time for Copy CMSIS : 25mS.
+2026-04-11 23:25:16,000 [INFO] ProjectBuilder:3463 - Time for Copy CMSIS : 0mS.
