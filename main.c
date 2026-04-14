@@ -25,6 +25,8 @@
 #include "xpt2046.h"
 #include "st7796.h"
 #include <stdlib.h>
+#include "arducam.h"
+#include "pid.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -66,6 +68,48 @@ static void MX_SPI3_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+// PID CODE
+#define AHT20_ADDRESS 0x38<<1
+float Temperature, Temperature_C, Humidity;
+void AHT20_Init (void) {
+	HAL_Delay(40);
+		uint8_t status;
+		HAL_I2C_Mem_Read(&hi2c1, AHT20_ADDRESS, 0x71, 1, &status, 1, 1000);
+		if ((status>>3 & 0x01) == 0)  // if CAL = 0
+		{
+			uint8_t init_commands[3] = {0xBE, 0x08, 0x00};
+			HAL_I2C_Master_Transmit(&hi2c1, AHT20_ADDRESS, init_commands, 3, 1000);
+			HAL_Delay (10);
+		}
+}
+void AHT20_Measure (void)
+{
+	uint8_t measure_command[3] = {0xAC, 0x33, 0x00};
+	HAL_I2C_Master_Transmit(&hi2c1, AHT20_ADDRESS, measure_command, 3, 1000);
+	HAL_Delay(80);
+
+	uint8_t status;
+	do {
+		HAL_I2C_Mem_Read(&hi2c1, AHT20_ADDRESS, 0x71, 1, &status, 1, 1000);
+		HAL_Delay(100);
+	}
+	while ((status>>7 & 0x01) == 1);
+
+	uint8_t RxData[7];
+	HAL_I2C_Master_Receive(&hi2c1, AHT20_ADDRESS, RxData, 7, 1000);
+
+uint32_t HUM_DATA = (RxData[1]<<16)|(RxData[2]<<8)|RxData[3];  // accumulated 24bit data
+HUM_DATA = HUM_DATA>>4;  // 20bit data
+Humidity = (float) ((HUM_DATA/pow(2,20)) * 100);
+uint32_t TEMP_DATA = (RxData[3]<<16)|(RxData[4]<<8)|RxData[5];  // accumulated 24bit data
+TEMP_DATA = TEMP_DATA&0xFFFFF;  // first 20bit data
+Temperature_C = (float) (((TEMP_DATA/pow(2,20)) * 200) - 50);
+Temperature = (Temperature_C * 1.8f) + 32.0f;
+}
+
+
+
+
 #define LED_PORT GPIOG
 #define LED_PIN  GPIO_PIN_0
 
@@ -305,12 +349,12 @@ static void UI_Draw2DigitValue(int x, int y, int value, uint16_t onColor)
 }
 
 /* ---------- Panels ---------- */
-static void UI_DrawTempPanel(int temperature)
+static void UI_DrawTempPanel(int screenTemp)
 {
     ST7796_FillRect(TEMP_X, TEMP_Y, TEMP_W, TEMP_H, UI_PANEL_BG);
     UI_DrawRectOutline(TEMP_X, TEMP_Y, TEMP_W, TEMP_H, ST7796_ORANGE);
 
-    UI_Draw2DigitValue(TEMP_X + 20, TEMP_Y + 38, temperature, ST7796_WHITE);
+    UI_Draw2DigitValue(TEMP_X + 20, TEMP_Y + 38, screenTemp, ST7796_WHITE);
     UI_DrawDegreeIcon(TEMP_X + 116, TEMP_Y + 48, ST7796_ORANGE);
 
     UI_DrawArrowButton(&BTN_TEMP_UP, 1);
@@ -347,10 +391,10 @@ static void UI_DrawCameraPanel(uint8_t baskingOccupied, uint8_t cameraPressed)
     UI_DrawBaskingStatus(baskingOccupied);
 }
 
-static void UI_DrawAll(int temperature, int humidity, uint8_t lightOn, uint8_t baskingOccupied)
+static void UI_DrawAll(int screenTemp, int humidity, uint8_t lightOn, uint8_t baskingOccupied)
 {
     ST7796_FillScreen(ST7796_BLACK);
-    UI_DrawTempPanel(temperature);
+    UI_DrawTempPanel(screenTemp);
     UI_DrawHumPanel(humidity);
     UI_DrawLightPanel(lightOn);
     UI_DrawCameraPanel(baskingOccupied, 0);
@@ -461,7 +505,7 @@ int main(void)
   MX_I2C2_Init();
   MX_SPI3_Init();
   /* USER CODE BEGIN 2 */
-  int temperature = 72;
+  int screenTemp = 72;
   int humidity = 45;
   uint8_t lightOn = 0;
   uint8_t baskingOccupied = 0;   /* simulated for now */
@@ -469,9 +513,13 @@ int main(void)
 
   ST7796_Init();
   XPT2046_Init();
+  AHT20_Init();
 
-  UI_DrawAll(temperature, humidity, lightOn, baskingOccupied);
+  UI_DrawAll(screenTemp, humidity, lightOn, baskingOccupied);
   LightLed_Set(lightOn);
+
+  // PID tuners
+  float kp = 1.5, ki = 0.02, kd = 0.5;
 
   /* USER CODE END 2 */
 
@@ -489,13 +537,13 @@ int main(void)
 
 	 	            if (Button_Contains(&BTN_TEMP_UP, x, y))
 	 	            {
-	 	                if (temperature < 99) temperature++;
-	 	                UI_DrawTempPanel(temperature);
+	 	                if (screenTemp < 99) screenTemp++;
+	 	                UI_DrawTempPanel(screenTemp);
 	 	            }
 	 	            else if (Button_Contains(&BTN_TEMP_DOWN, x, y))
 	 	            {
-	 	                if (temperature > 0) temperature--;
-	 	                UI_DrawTempPanel(temperature);
+	 	                if (screenTemp > 0) screenTemp--;
+	 	                UI_DrawTempPanel(screenTemp);
 	 	            }
 	 	            else if (Button_Contains(&BTN_HUM_UP, x, y))
 	 	            {
@@ -532,6 +580,8 @@ int main(void)
 	 	    {
 	 	        touchLatched = 0;
 	 	    }
+	 	   AHT20_Measure();
+	 	   PIDloop(Temperature, screenTemp, kp, ki, kd, false);
 
 	 	    HAL_Delay(15);
     /* USER CODE END WHILE */
@@ -742,7 +792,7 @@ static void MX_SPI3_Init(void)
   hspi3.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi3.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi3.Init.NSS = SPI_NSS_SOFT;
-  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_16;
   hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi3.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi3.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
@@ -772,6 +822,7 @@ static void MX_GPIO_Init(void)
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
+  __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
@@ -782,6 +833,9 @@ static void MX_GPIO_Init(void)
   HAL_PWREx_EnableVddIO2();
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_4|GPIO_PIN_5, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1|GPIO_PIN_4, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
@@ -789,6 +843,13 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12|LD3_Pin|LD2_Pin|GPIO_PIN_8, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : PE4 PE5 */
+  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
   /*Configure GPIO pin : B1_Pin */
   GPIO_InitStruct.Pin = B1_Pin;
