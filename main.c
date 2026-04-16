@@ -154,11 +154,13 @@ static void LightLed_Set(uint8_t on)
 #define UI_PANEL_BG     0x1082   /* dark gray-blue */
 #define UI_SEG_OFF      0x2945   /* dim segment color */
 
-static const Button_t BTN_TEMP_UP    = { TEMP_X  + 170, TEMP_Y  + 18, 34, 40 };
-static const Button_t BTN_TEMP_DOWN  = { TEMP_X  + 170, TEMP_Y  + 82, 34, 40 };
+static const Button_t BTN_TEMP_UP    = { TEMP_X + 170, TEMP_Y + 18,  34, 40 };
+static const Button_t BTN_TEMP_DOWN  = { TEMP_X + 170, TEMP_Y + 82,  34, 40 };
+static const Button_t BTN_TEMP_MODE  = { TEMP_X + 16,  TEMP_Y + 106, 140, 24 };
 
-static const Button_t BTN_HUM_UP     = { HUM_X   + 170, HUM_Y   + 18, 34, 40 };
-static const Button_t BTN_HUM_DOWN   = { HUM_X   + 170, HUM_Y   + 82, 34, 40 };
+static const Button_t BTN_HUM_UP     = { HUM_X  + 170, HUM_Y  + 18,  34, 40 };
+static const Button_t BTN_HUM_DOWN   = { HUM_X  + 170, HUM_Y  + 82,  34, 40 };
+static const Button_t BTN_HUM_MODE   = { HUM_X  + 16,  HUM_Y  + 106, 140, 24 };
 
 static const Button_t BTN_LIGHT      = { LIGHT_X + 52,  LIGHT_Y + 92, 116, 32 };
 static const Button_t BTN_CAMERA     = { CAM_X   + 52,  CAM_Y   + 18, 116, 54 };
@@ -348,29 +350,47 @@ static void UI_Draw2DigitValue(int x, int y, int value, uint16_t onColor)
     UI_DrawDigit(x + 38, y, ones, onColor, UI_SEG_OFF, 3);
 }
 
+static void UI_DrawModeButton(const Button_t *btn, uint8_t showCurrent)
+{
+    uint16_t bg  = showCurrent ? 0x03EF : 0x8C51; /* teal = current, amber = desired */
+    const char *label = showCurrent ? "CURRENT" : "DESIRED";
+
+    ST7796_FillRect(btn->x, btn->y, btn->w, btn->h, bg);
+    UI_DrawRectOutline(btn->x, btn->y, btn->w, btn->h, ST7796_WHITE);
+
+    uint8_t  len   = 0;
+    const char *p  = label;
+    while (*p++) len++;
+    uint16_t tx = btn->x + (btn->w - len * 6) / 2;
+    uint16_t ty = btn->y + (btn->h - 7) / 2;
+    ST7796_DrawString(tx, ty, label, ST7796_WHITE, bg, 1);
+}
+
 /* ---------- Panels ---------- */
-static void UI_DrawTempPanel(int screenTemp)
+static void UI_DrawTempPanel(int displayValue, uint8_t showCurrent)
 {
     ST7796_FillRect(TEMP_X, TEMP_Y, TEMP_W, TEMP_H, UI_PANEL_BG);
     UI_DrawRectOutline(TEMP_X, TEMP_Y, TEMP_W, TEMP_H, ST7796_ORANGE);
 
-    UI_Draw2DigitValue(TEMP_X + 20, TEMP_Y + 38, screenTemp, ST7796_WHITE);
-    UI_DrawDegreeIcon(TEMP_X + 116, TEMP_Y + 48, ST7796_ORANGE);
+    UI_Draw2DigitValue(TEMP_X + 20, TEMP_Y + 30, displayValue, ST7796_WHITE);
+    UI_DrawDegreeIcon(TEMP_X + 116, TEMP_Y + 40, ST7796_ORANGE);
 
-    UI_DrawArrowButton(&BTN_TEMP_UP, 1);
+    UI_DrawArrowButton(&BTN_TEMP_UP,   1);
     UI_DrawArrowButton(&BTN_TEMP_DOWN, 0);
+    UI_DrawModeButton(&BTN_TEMP_MODE, showCurrent);
 }
 
-static void UI_DrawHumPanel(int humidity)
+static void UI_DrawHumPanel(int displayValue, uint8_t showCurrent)
 {
     ST7796_FillRect(HUM_X, HUM_Y, HUM_W, HUM_H, UI_PANEL_BG);
     UI_DrawRectOutline(HUM_X, HUM_Y, HUM_W, HUM_H, ST7796_CYAN);
 
-    UI_Draw2DigitValue(HUM_X + 20, HUM_Y + 38, humidity, ST7796_WHITE);
-    UI_DrawPercentIcon(HUM_X + 116, HUM_Y + 46, ST7796_CYAN);
+    UI_Draw2DigitValue(HUM_X + 20, HUM_Y + 30, displayValue, ST7796_WHITE);
+    UI_DrawPercentIcon(HUM_X + 116, HUM_Y + 38, ST7796_CYAN);
 
-    UI_DrawArrowButton(&BTN_HUM_UP, 1);
+    UI_DrawArrowButton(&BTN_HUM_UP,   1);
     UI_DrawArrowButton(&BTN_HUM_DOWN, 0);
+    UI_DrawModeButton(&BTN_HUM_MODE, showCurrent);
 }
 
 static void UI_DrawLightPanel(uint8_t lightOn)
@@ -394,8 +414,8 @@ static void UI_DrawCameraPanel(uint8_t baskingOccupied, uint8_t cameraPressed)
 static void UI_DrawAll(int screenTemp, int humidity, uint8_t lightOn, uint8_t baskingOccupied)
 {
     ST7796_FillScreen(ST7796_BLACK);
-    UI_DrawTempPanel(screenTemp);
-    UI_DrawHumPanel(humidity);
+    UI_DrawTempPanel(screenTemp, 0);
+    UI_DrawHumPanel(humidity, 0);
     UI_DrawLightPanel(lightOn);
     UI_DrawCameraPanel(baskingOccupied, 0);
 }
@@ -508,8 +528,10 @@ int main(void)
   int screenTemp = 72;
   int humidity = 45;
   uint8_t lightOn = 0;
-  uint8_t baskingOccupied = 0;   /* simulated for now */
+  uint8_t baskingOccupied = 0;
   uint8_t touchLatched = 0;
+  uint8_t tempShowCurrent = 0;   /* 0=desired, 1=current */
+  uint8_t humShowCurrent = 0;   /* 0=desired, 1=current */
 
   ST7796_Init();
   XPT2046_Init();
@@ -527,63 +549,92 @@ int main(void)
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  uint16_t x, y;
+if (Touch_GetPoint(&x, &y))
+{
+    if (!touchLatched)
+    {
+        touchLatched = 1;
 
-	 	    if (Touch_GetPoint(&x, &y))
-	 	    {
-	 	        if (!touchLatched)
-	 	        {
-	 	            touchLatched = 1;
+        /* ── Temperature panel ── */
+        if (Button_Contains(&BTN_TEMP_UP, x, y))
+        {
+            if (screenTemp <= 94) screenTemp += 5;
+            UI_DrawTempPanel(tempShowCurrent ? (int)Temperature : screenTemp,
+                             tempShowCurrent);
+        }
+        else if (Button_Contains(&BTN_TEMP_DOWN, x, y))
+        {
+            if (screenTemp >= 5) screenTemp -= 5;
+            UI_DrawTempPanel(tempShowCurrent ? (int)Temperature : screenTemp,
+                             tempShowCurrent);
+        }
+        else if (Button_Contains(&BTN_TEMP_MODE, x, y))
+        {
+            tempShowCurrent = !tempShowCurrent;
+            UI_DrawTempPanel(tempShowCurrent ? (int)Temperature : screenTemp,
+                             tempShowCurrent);
+        }
 
-	 	            if (Button_Contains(&BTN_TEMP_UP, x, y))
-	 	            {
-	 	                if (screenTemp < 99) screenTemp++;
-	 	                UI_DrawTempPanel(screenTemp);
-	 	            }
-	 	            else if (Button_Contains(&BTN_TEMP_DOWN, x, y))
-	 	            {
-	 	                if (screenTemp > 0) screenTemp--;
-	 	                UI_DrawTempPanel(screenTemp);
-	 	            }
-	 	            else if (Button_Contains(&BTN_HUM_UP, x, y))
-	 	            {
-	 	                if (humidity < 99) humidity++;
-	 	                UI_DrawHumPanel(humidity);
-	 	            }
-	 	            else if (Button_Contains(&BTN_HUM_DOWN, x, y))
-	 	            {
-	 	                if (humidity > 0) humidity--;
-	 	                UI_DrawHumPanel(humidity);
-	 	            }
-	 	            else if (Button_Contains(&BTN_LIGHT, x, y))
-	 	            {
-	 	                lightOn = !lightOn;
-	 	                LightLed_Set(lightOn);
-	 	                UI_DrawLightPanel(lightOn);
-	 	            }
-	 	            else if (Button_Contains(&BTN_CAMERA, x, y))
-	 	            {
-	 	                /* proof-of-concept camera press */
-	 	                UI_DrawCameraPanel(baskingOccupied, 1);
-	 	                HAL_Delay(120);
-	 	                UI_DrawCameraPanel(baskingOccupied, 0);
-	 	            }
-	 	            else if (Button_Contains(&BTN_BASKING, x, y))
-	 	            {
-	 	                /* simulated pressure-cell state for now */
-	 	                baskingOccupied = !baskingOccupied;
-	 	                UI_DrawCameraPanel(baskingOccupied, 0);
-	 	            }
-	 	        }
-	 	    }
-	 	    else
-	 	    {
-	 	        touchLatched = 0;
-	 	    }
-	 	   AHT20_Measure();
-	 	   PIDloop(Temperature, screenTemp, kp, ki, kd, false);
+        /* ── Humidity panel ── */
+        else if (Button_Contains(&BTN_HUM_UP, x, y))
+        {
+            if (humidity <= 94) humidity += 5;
+            UI_DrawHumPanel(humShowCurrent ? (int)Humidity : humidity,
+                            humShowCurrent);
+        }
+        else if (Button_Contains(&BTN_HUM_DOWN, x, y))
+        {
+            if (humidity >= 5) humidity -= 5;
+            UI_DrawHumPanel(humShowCurrent ? (int)Humidity : humidity,
+                            humShowCurrent);
+        }
+        else if (Button_Contains(&BTN_HUM_MODE, x, y))
+        {
+            humShowCurrent = !humShowCurrent;
+            UI_DrawHumPanel(humShowCurrent ? (int)Humidity : humidity,
+                            humShowCurrent);
+        }
 
-	 	    HAL_Delay(15);
+        /* ── Light panel ── */
+        else if (Button_Contains(&BTN_LIGHT, x, y))
+        {
+            lightOn = !lightOn;
+            LightLed_Set(lightOn);
+            UI_DrawLightPanel(lightOn);
+        }
+
+        /* ── Camera panel ── */
+        else if (Button_Contains(&BTN_CAMERA, x, y))
+        {
+            UI_DrawCameraPanel(baskingOccupied, 1);
+            HAL_Delay(120);
+            UI_DrawCameraPanel(baskingOccupied, 0);
+        }
+        else if (Button_Contains(&BTN_BASKING, x, y))
+        {
+            baskingOccupied = !baskingOccupied;
+            UI_DrawCameraPanel(baskingOccupied, 0);
+        }
+    }
+}
+else
+{
+    touchLatched = 0;
+}
+
+AHT20_Measure();
+PIDloop(Temperature, screenTemp, kp, ki, kd, false);
+
+if (tempShowCurrent)
+{
+    UI_Draw2DigitValue(TEMP_X + 20, TEMP_Y + 30, (int)Temperature, ST7796_WHITE);
+}
+if (humShowCurrent)
+{
+    UI_Draw2DigitValue(HUM_X + 20, HUM_Y + 30, (int)Humidity, ST7796_WHITE);
+}
+
+HAL_Delay(15);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
