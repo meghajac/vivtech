@@ -36,7 +36,13 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+// buttons for the bluetooth remote
+#define BT_CMD_TEMP_UP      'A'
+#define BT_CMD_TEMP_DOWN    'B'
+#define BT_CMD_HUM_UP       'C'
+#define BT_CMD_HUM_DOWN     'D'
+#define BT_CMD_CAMERA       'E'
+#define BT_CMD_LIGHT        'F'
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -52,7 +58,10 @@ SPI_HandleTypeDef hspi2;
 SPI_HandleTypeDef hspi3;
 
 /* USER CODE BEGIN PV */
+extern UART_HandleTypeDef huart1;
 
+volatile uint8_t bt_rx_byte  = 0;   /* filled by ISR */
+volatile uint8_t bt_rx_ready = 0;   /* flag: 1 = new command waiting */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -525,6 +534,7 @@ int main(void)
   MX_I2C2_Init();
   MX_SPI3_Init();
   /* USER CODE BEGIN 2 */
+  HAL_UART_Receive_IT(&huart1, (uint8_t *)&bt_rx_byte, 1);
   int screenTemp = 72;
   int humidity = 45;
   uint8_t lightOn = 0;
@@ -623,6 +633,54 @@ else
 {
     touchLatched = 0;
 }
+
+if (bt_rx_ready)
+{
+    uint8_t cmd  = bt_rx_byte;   /* snapshot before ISR overwrites */
+    bt_rx_ready  = 0;            /* clear */
+
+    switch (cmd)
+    {
+        case BT_CMD_TEMP_UP:
+            if (screenTemp <= 94) screenTemp += 5;
+            UI_DrawTempPanel(tempShowCurrent ? (int)Temperature : screenTemp,
+                             tempShowCurrent);
+            break;
+
+        case BT_CMD_TEMP_DOWN:
+            if (screenTemp >= 5) screenTemp -= 5;
+            UI_DrawTempPanel(tempShowCurrent ? (int)Temperature : screenTemp,
+                             tempShowCurrent);
+            break;
+
+        case BT_CMD_HUM_UP:
+            if (humidity <= 94) humidity += 5;
+            UI_DrawHumPanel(humShowCurrent ? (int)Humidity : humidity,
+                            humShowCurrent);
+            break;
+
+        case BT_CMD_HUM_DOWN:
+            if (humidity >= 5) humidity -= 5;
+            UI_DrawHumPanel(humShowCurrent ? (int)Humidity : humidity,
+                            humShowCurrent);
+            break;
+
+        case BT_CMD_LIGHT:
+            lightOn = !lightOn;
+            LightLed_Set(lightOn);
+            UI_DrawLightPanel(lightOn);
+            break;
+
+        case BT_CMD_CAMERA:
+            UI_DrawCameraPanel(baskingOccupied, 1);
+            HAL_Delay(120);
+            UI_DrawCameraPanel(baskingOccupied, 0);
+            break;
+
+        default:
+            break;
+    }
+}	  
 
 uint32_t now = HAL_GetTick();
 if (now - last_sensor_tick >= SENSOR_INTERVAL_MS)
@@ -985,7 +1043,17 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART1)
+    {
+        /* Set the ready flag */
+        bt_rx_ready = 1;
 
+        /* Re-arm immediately so we don't miss next byte */
+        HAL_UART_Receive_IT(&huart1, (uint8_t *)&bt_rx_byte, 1);
+    }
+}
 /* USER CODE END 4 */
 
 /**
