@@ -539,6 +539,8 @@ int main(void)
 
   UI_DrawAll(screenTemp, humidity, lightOn, baskingOccupied);
   LightLed_Set(lightOn);
+  uint32_t last_sensor_tick = 0U;
+  const uint32_t SENSOR_INTERVAL_MS = 2000U;  /* read sensor every 2 seconds */
 
   // PID tuners
   float kp = 1.5, ki = 0.02, kd = 0.5;
@@ -622,16 +624,22 @@ else
     touchLatched = 0;
 }
 
-AHT20_Measure();
-PIDloop(Temperature, screenTemp, kp, ki, kd, false);
+uint32_t now = HAL_GetTick();
+if (now - last_sensor_tick >= SENSOR_INTERVAL_MS)
+{
+    last_sensor_tick = now;
 
-if (tempShowCurrent)
-{
-    UI_Draw2DigitValue(TEMP_X + 20, TEMP_Y + 30, (int)Temperature, ST7796_WHITE);
-}
-if (humShowCurrent)
-{
-    UI_Draw2DigitValue(HUM_X + 20, HUM_Y + 30, (int)Humidity, ST7796_WHITE);
+    AHT20_Measure();
+    PIDloop(Temperature, screenTemp, kp, ki, kd, false);
+
+    if (tempShowCurrent)
+    {
+        UI_Draw2DigitValue(TEMP_X + 20, TEMP_Y + 30, (int)Temperature, ST7796_WHITE);
+    }
+    if (humShowCurrent)
+    {
+        UI_Draw2DigitValue(HUM_X + 20, HUM_Y + 30, (int)Humidity, ST7796_WHITE);
+    }
 }
 
 HAL_Delay(15);
