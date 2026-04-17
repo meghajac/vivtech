@@ -39,5 +39,9 @@ void ST7796_FillScreen(uint16_t color);
 void ST7796_FillRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color);
 void ST7796_DrawHLine(uint16_t x, uint16_t y, uint16_t w, uint16_t color);
 void ST7796_DrawVLine(uint16_t x, uint16_t y, uint16_t h, uint16_t color);
+void ST7796_DrawChar(uint16_t x, uint16_t y, char ch,
+                     uint16_t fg, uint16_t bg, uint8_t scale);
+void ST7796_DrawString(uint16_t x, uint16_t y, const char *str,
+                       uint16_t fg, uint16_t bg, uint8_t scale);
 
 #endif
