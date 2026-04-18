@@ -1,0 +1,53 @@
+void OV2640_RAW_Init() {
+    // 1. Reset
+    wrSensorReg8_8(0xff, 0x01);
+    wrSensorReg8_8(0x12, 0x80);
+    HAL_Delay(100);
+
+    // 2. Load the RAW QVGA configuration
+    
+    wrSensorRegs8_8(OV2640_QVGA);
+
+    // 3. Set the ArduChip to RAW Mode
+    // Register 0x03, Bit 1: 0 = JPEG, 1 = RAW (0x02)
+    arducam_spi_write(0x03, 0x02);
+
+    printf("Arducam: RAW QVGA Mode Loaded.\r\n");
+}
+
+void Capture_RAW_QVGA() {
+    // 1. Clear FIFO and Trigger Capture
+    arducam_spi_write(0x04, 0x01); // Flush FIFO
+    arducam_spi_write(0x04, 0x02); // Start Capture
+
+    // 2. Wait for the hardware to finish filling the RAM
+    // For RAW QVGA, this takes about 30-50ms
+    uint32_t timeout = 0;
+    while (!(arducam_spi_read(0x41) & 0x08)) {
+        timeout++;
+        if(timeout > 10000) {
+            printf("Capture Timeout!\r\n");
+            return;
+        }
+    }
+
+    // 3. Set Fixed Length
+    // 320 * 240 * 2 bytes = 153,600
+    uint32_t length = 153600;
+    printf("RAW Data Ready. Size: %lu. START_DATA\r\n", length);
+
+    // 4. Start Burst Read
+    HAL_GPIO_WritePin(GPIOD, GPIO_PIN_14, GPIO_PIN_RESET); // CS LOW
+    uint8_t burst_cmd = 0x3C;
+    HAL_SPI_Transmit(&hspi1, &burst_cmd, 1, 10);
+
+    // 5. Read Loop (No alignment needed for RAW)
+    for (uint32_t i = 0; i < length; i++) {
+        uint8_t byte;
+        HAL_SPI_Receive(&hspi1, &byte, 1, 10);
+
+        // Print Hex (Warning: This will be VERY slow at 153KB)
+        printf("%02X", byte);
+
+        
+    }
