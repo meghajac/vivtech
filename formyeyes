@@ -1,6 +1,12 @@
-#define BT_CMD_TEMP_UP    'A'
-#define BT_CMD_TEMP_DOWN  'B'
-#define BT_CMD_HUM_UP     'C'
-#define BT_CMD_HUM_DOWN   'D'
-#define BT_CMD_CAMERA     'E'
-#define BT_CMD_LIGHT      'F'
+PD:
+/* ArduCAM SPI registers */
+#define ARDUCHIP_TRIG       0x41
+#define CAP_DONE_MASK       0x08
+#define ARDUCAM_CS_PORT     GPIOG
+#define ARDUCAM_CS_PIN      GPIO_PIN_12
+
+/* Image dimensions */
+#define QVGA_W              320U
+#define QVGA_H              240U
+#define QVGA_BYTES          (QVGA_W * QVGA_H * 2U)   /* 153,600 */
+#define CAM_CHUNK_BYTES     640U   /* one row at a time = 320px x 2 bytes */
