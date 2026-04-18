@@ -1,94 +1,155 @@
 /**
- * @file    arducam.h
- * @brief   ArduCAM OV2640 driver for STM32 L4R5ZI-P
- *          
+ * @file    arducam.c
+ * @brief   ArduCAM OV2640 driver — implementation for STM32 L4R5ZI-P
  *
- *  Wiring on L4R5ZI-P:
- *    ArduCAM CS  → GPIOD PIN_14
- *    ArduCAM SPI → hspi2  (SCK/MOSI/MISO)
- *    OV2640 I2C  → hi2c2  (SDA/SCL)
+ * 
+ *    - SPI handle is hspi2 (hspi1 is the display on L4R5)
+ *    - I2C handle is hi2c2 (AHT20 sensor shares this bus)
+ *    - After capture, pixels are streamed directly to the ST7796
+ *      rather than printed as hex — no 153KB RAM buffer needed
+ */
+
+#include "arducam.h"
+#include "st7796.h"      /* for ST7796_WriteDataBuf, CS/DC helpers */
+#include "ov2640_regs.h" /* register tables from teammate */
+
+/* ─── QVGA image dimensions ─────────────────────────────────────────────── */
+#define QVGA_W          320U
+#define QVGA_H          240U
+#define QVGA_BYTES      (QVGA_W * QVGA_H * 2U)   /* 153,600 */
+
+/* Row buffer — one row at a time to keep stack usage low */
+#define ROW_BYTES       (QVGA_W * 2U)              /* 640 bytes per row */
+static uint8_t s_row_buf[ROW_BYTES];
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * SPI REGISTER ACCESS
+ * ───────────────────────────────────────────────────────────────────────────── */
+void arducam_spi_write(uint8_t address, uint8_t value)
+{
+    uint8_t data[2] = { address | 0x80, value };  /* write: set MSB */
+
+    HAL_GPIO_WritePin(ARDUCAM_CS_PORT, ARDUCAM_CS_PIN, GPIO_PIN_RESET);
+    HAL_SPI_Transmit(&hspi2, data, 2, 100);
+    HAL_GPIO_WritePin(ARDUCAM_CS_PORT, ARDUCAM_CS_PIN, GPIO_PIN_SET);
+}
+
+uint8_t arducam_spi_read(uint8_t address)
+{
+    uint8_t addr  = address & 0x7F;  /* read: clear MSB */
+    uint8_t value = 0;
+
+    HAL_GPIO_WritePin(ARDUCAM_CS_PORT, ARDUCAM_CS_PIN, GPIO_PIN_RESET);
+    HAL_SPI_Transmit(&hspi2, &addr,  1, 100);
+    HAL_SPI_Receive (&hspi2, &value, 1, 100);
+    HAL_GPIO_WritePin(ARDUCAM_CS_PORT, ARDUCAM_CS_PIN, GPIO_PIN_SET);
+
+    return value;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * I2C SENSOR REGISTER ACCESS
+ * ───────────────────────────────────────────────────────────────────────────── */
+void wrSensorReg8_8(uint8_t reg, uint8_t data)
+{
+    HAL_I2C_Mem_Write(&hi2c2, OV2640_I2C_ADDR,
+                      reg, I2C_MEMADD_SIZE_8BIT,
+                      &data, 1, 100);
+    /* Small delay between I2C writes helps on L4 at high clock */
+    HAL_Delay(1);
+}
+
+void wrSensorRegs8_8(const struct sensor_reg reglist[])
+{
+    for (int i = 0; ; i++) {
+        if (reglist[i].reg == 0xFF && reglist[i].val == 0xFF) break;
+        wrSensorReg8_8(reglist[i].reg, reglist[i].val);
+    }
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+  SENSOR INIT — RAW QVGA RGB565
+ * ───────────────────────────────────────────────────────────────────────────── */
+void OV2640_RAW_Init(void)
+{
+    /* 1. Soft-reset the ArduCAM chip */
+    arducam_spi_write(0x07, 0x80);
+    HAL_Delay(100);
+    arducam_spi_write(0x07, 0x00);
+    HAL_Delay(100);
+
+    /* 2. Reset the OV2640 sensor */
+    wrSensorReg8_8(0xFF, 0x01);   /* select sensor bank */
+    wrSensorReg8_8(0x12, 0x80);   /* software reset */
+    HAL_Delay(100);
+
+    /* 3. Load RAW QVGA register table (from ov2640_regs.h) */
+    wrSensorRegs8_8(OV2640_QVGA);
+
+    /* 4. Load RGB565 output format table */
+    wrSensorRegs8_8(OV2640_RGB565);
+
+    /* 5. Set ArduChip to RAW mode (0x02 = RAW, 0x00 = JPEG) */
+    arducam_spi_write(ARDUCHIP_MODE, 0x02);
+
+    /* 6. Set SPI RXFIFO threshold for 8-bit transfers on STM32L4 */
+    SET_BIT(hspi2.Instance->CR2, SPI_RXFIFO_THRESHOLD_QF);
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+ * CAPTURE AND STREAM TO DISPLAY
  *
- *  NOTE: hspi1 is reserved for the ST7796 display.
- *        hspi2 is dedicated to the ArduCAM.
- */
-
-#ifndef ARDUCAM_H
-#define ARDUCAM_H
-
-#include "main.h"
-#include <stdint.h>
-
-/* ─── Hardware config ────────────────────────────────────────────────────── */
-#define ARDUCAM_CS_PORT         GPIOD
-#define ARDUCAM_CS_PIN          GPIO_PIN_14
-
-/* SPI handle for ArduCAM chip registers and FIFO */
-extern SPI_HandleTypeDef  hspi2;
-
-/* I2C handle for OV2640 sensor registers */
-extern I2C_HandleTypeDef  hi2c2;
-
-/* OV2640 I2C address (7-bit 0x30, shifted for HAL) */
-#define OV2640_I2C_ADDR         (0x30 << 1)
-
-/* ─── ArduCAM chip register addresses ───────────────────────────────────── */
-#define ARDUCHIP_TEST1          0x00
-#define ARDUCHIP_MODE           0x03   /* 0x00=JPEG, 0x02=RAW */
-#define ARDUCHIP_FIFO           0x04
-#define ARDUCHIP_TRIG           0x41
-#define BURST_FIFO_READ         0x3C
-
-/* FIFO control values */
-#define FIFO_FLUSH              0x01
-#define FIFO_START              0x02
-
-/* Capture done flag */
-#define CAP_DONE_MASK           0x08
-
-/* ─── Sensor register struct ──────────── */
-struct sensor_reg {
-    uint8_t reg;
-    uint8_t val;
-};
-
-/* ─── Public API ─────────────────────────────────────────────────────────── */
-
-/**
- * @brief  Write to an ArduCAM SPI chip register.
- *         CS managed internally.
- */
-void arducam_spi_write(uint8_t address, uint8_t value);
-
-/**
- * @brief  Read from an ArduCAM SPI chip register.
- *         CS managed internally.
- */
-uint8_t arducam_spi_read(uint8_t address);
-
-/**
- * @brief  Write one register to the OV2640 sensor over I2C.
- */
-void wrSensorReg8_8(uint8_t reg, uint8_t data);
-
-/**
- * @brief  Write a register table to the OV2640 sensor.
- *         Table must be terminated with {0xFF, 0xFF}.
- */
-void wrSensorRegs8_8(const struct sensor_reg reglist[]);
-
-/**
- * @brief  Initialise the OV2640 for RAW QVGA (320x240 RGB565) mode.
- *         Call once after SPI and I2C peripherals are ready.
- */
-void OV2640_RAW_Init(void);
-
-/**
- * @brief  Capture one RAW QVGA frame into the ArduCAM FIFO,
- *         then stream it directly to the ST7796 display.
- *         The display window must be set by the caller before calling this.
+ * This avoids storing 153KB in RAM. Instead:
+ *   ArduCAM FIFO → read one row (640 bytes) → write to ST7796 → repeat
  *
- * @return 0 on success, 1 on capture timeout.
- */
-uint8_t Arducam_CaptureToDisplay(void);
+ * The caller must have already:
+ *   1. Called ST7796_SetAddrWindow() to set the display window
+ *   2. Sent the RAMWR (0x2C) command to open the pixel stream
+ * ───────────────────────────────────────────────────────────────────────────── */
+uint8_t Arducam_CaptureToDisplay(void)
+{
+    /* ── 1. Flush FIFO and trigger capture ── */
+    arducam_spi_write(ARDUCHIP_FIFO, FIFO_FLUSH);
+    HAL_Delay(5);
+    arducam_spi_write(ARDUCHIP_FIFO, FIFO_START);
 
-#endif /* ARDUCAM_H */
+    /* ── 2. Wait for capture done ── */
+    uint32_t timeout = 0;
+    while (!(arducam_spi_read(ARDUCHIP_TRIG) & CAP_DONE_MASK))
+    {
+        timeout++;
+        if (timeout > 100000U)
+        {
+            return 1;  /* timed out */
+        }
+    }
+
+    /* ── 3. Start burst read from ArduCAM FIFO ── */
+    uint8_t burst_cmd = BURST_FIFO_READ;
+    uint8_t dummy     = 0;
+
+    HAL_GPIO_WritePin(ARDUCAM_CS_PORT, ARDUCAM_CS_PIN, GPIO_PIN_RESET);
+    HAL_SPI_Transmit(&hspi2, &burst_cmd, 1, 10);
+    HAL_SPI_Receive (&hspi2, &dummy,     1, 10);  /* discard first dummy byte */
+
+    /* ── 4. Stream row by row to the display ── */
+
+    ST7796_CS_Low();
+
+    /* Set DC HIGH (data mode) using the display's DC port/pin from st7796.h */
+    HAL_GPIO_WritePin(LCD_DC_GPIO_PORT, LCD_DC_GPIO_PIN, GPIO_PIN_SET);
+
+    for (uint32_t row = 0; row < QVGA_H; row++)
+    {
+        /* Read one full row from ArduCAM */
+        HAL_SPI_Receive(&hspi2, s_row_buf, ROW_BYTES, 200);
+
+        /* Write that row to the display */
+        HAL_SPI_Transmit(&hspi1, s_row_buf, ROW_BYTES, 200);
+    }
+
+    ST7796_CS_High();
+    HAL_GPIO_WritePin(ARDUCAM_CS_PORT, ARDUCAM_CS_PIN, GPIO_PIN_SET);
+
+    return 0;  /* success */
+}
