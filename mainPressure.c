@@ -18,7 +18,7 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
-
+#include "stdio.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 
@@ -57,7 +57,8 @@ static void MX_LPUART1_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 int32_t raw_weight = 0;
-
+float scale_factor = 30.4;
+int32_t tare_offset = 0;
 int32_t HX711_Read(void) {
     int32_t buffer = 0;
     uint32_t timeout = 0;
@@ -66,38 +67,39 @@ int32_t HX711_Read(void) {
     // If it stays HIGH, the board isn't powered or isn't connected
     while(HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == GPIO_PIN_SET) {
         timeout++;
-        if(timeout > 1000000) return -1;
+        if(timeout > 1000000) return -999;
     }
 
     // 2. Read 24 bits
     for(int i = 0; i < 24; i++) {
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_SET); // Clock HIGH
-
-        // Delay to let the voltage rise (0.2 - 0.5 microseconds)
-        for(volatile int d=0; d<150; d++);
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_SET);
+        __NOP(); __NOP(); // Just 2 tiny NOPs instead of a loop
 
         buffer = buffer << 1;
-
-        // Read the pin
         if(HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == GPIO_PIN_SET) {
             buffer++;
         }
 
-        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET); // Clock LOW
-        for(volatile int d=0; d<150; d++); // Delay for stable LOW
+        HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET);
+        __NOP(); __NOP();
     }
 
     // 3. 25th pulse (Channel A, Gain 128)
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_SET);
-    for(volatile int d=0; d<150; d++);
+
+    // Keep this delay VERY short (just a few NOPs)
+    __NOP(); __NOP(); __NOP();
+
+    // THIS MUST HAPPEN IMMEDIATELY
     HAL_GPIO_WritePin(GPIOC, GPIO_PIN_1, GPIO_PIN_RESET);
-
-    // If still -2, we need to check if the wires are swapped
-    if (buffer == 0) return -2;
-
-    // Sign extension
+if (buffer == 0) return -2;
+    // NOW you can do your sign extension and returns
     if (buffer & 0x800000) buffer |= 0xFF000000;
     return buffer;
+    // If still -2, we need to check if the wires are swapped
+
+
+
 }
 /* USER CODE END 0 */
 
@@ -133,6 +135,15 @@ int main(void)
   MX_LPUART1_UART_Init();
   /* USER CODE BEGIN 2 */
   printf("HX711 Interface Initialized\r\n");
+  printf("Taring... Keep scale empty.\r\n");
+  int32_t sum = 0;
+  for(int i = 0; i < 10; i++) {
+      while(HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == GPIO_PIN_SET); // Wait for ready
+      sum += HX711_Read();
+      HAL_Delay(100);
+  }
+  tare_offset = sum / 10; // Average of 10 readings
+  printf("Tare complete: %ld\r\n", tare_offset);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -144,10 +155,23 @@ int main(void)
     /* USER CODE BEGIN 3 */
 	  //HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_1);
 	 // HAL_Delay(1000);
-	  raw_weight = HX711_Read();
-	    printf("Raw ADC Count: %ld\r\n", raw_weight);
+	 // raw_weight = HX711_Read();
+	  //  printf("Raw ADC Count: %ld\r\n", raw_weight);
 
-	    HAL_Delay(100); // Small delay to make the terminal readable
+	  //  HAL_Delay(100); // Small delay to make the terminal readable
+	  if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == GPIO_PIN_RESET) {
+	      int32_t raw = HX711_Read();
+
+	      // We subtract raw from offset to keep the result positive
+	      float grams = (float)(tare_offset - raw) / scale_factor;
+
+	      // Simple filter: if weight is very small, just show 0.0
+	      if (grams < 2.0 && grams > -2.0) grams = 0.0;
+
+	      printf("Weight: %.1f g\r\n", grams);
+	  }
+	      // Small pause to prevent the CPU from "hammering" the pin
+	      HAL_Delay(10);
   }
   /* USER CODE END 3 */
 }
