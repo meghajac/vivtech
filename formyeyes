@@ -10,3 +10,192 @@ PD:
 #define QVGA_H              240U
 #define QVGA_BYTES          (QVGA_W * QVGA_H * 2U)   /* 153,600 */
 #define CAM_CHUNK_BYTES     640U   /* one row at a time = 320px x 2 bytes */
+
+
+CODE 0:
+/* ─── ArduCAM low-level helpers ──────────────────────────────────────────── */
+static void Cam_CS_Low(void)
+{
+    HAL_GPIO_WritePin(ARDUCAM_CS_PORT, ARDUCAM_CS_PIN, GPIO_PIN_RESET);
+}
+
+static void Cam_CS_High(void)
+{
+    HAL_GPIO_WritePin(ARDUCAM_CS_PORT, ARDUCAM_CS_PIN, GPIO_PIN_SET);
+}
+
+static void Cam_SPI_Write(uint8_t reg, uint8_t val)
+{
+    uint8_t buf[2] = { reg | 0x80, val };  /* write = reg | 0x80 */
+    Cam_CS_Low();
+    HAL_SPI_Transmit(&hspi2, buf, 2, 10);  /* change to whichever SPI ArduCAM is on */
+    Cam_CS_High();
+}
+
+static uint8_t Cam_SPI_Read(uint8_t reg)
+{
+    uint8_t tx = reg & 0x7F;  /* read = reg & 0x7F */
+    uint8_t rx = 0;
+    Cam_CS_Low();
+    HAL_SPI_Transmit(&hspi2, &tx, 1, 10);
+    HAL_SPI_Receive (&hspi2, &rx, 1, 10);
+    Cam_CS_High();
+    return rx;
+}
+
+/* ─── ArduCAM RAW QVGA init ─────────────────────────────────────────────── */
+static void Cam_Init_RAW(void)
+{
+    /* Reset sensor via I2C */
+    /* wrSensorReg8_8(0xff, 0x01); */
+    /* wrSensorReg8_8(0x12, 0x80); */
+    HAL_Delay(100);
+
+    /* Set ArduChip to RAW mode (bit 1 of reg 0x03) */
+    Cam_SPI_Write(0x03, 0x02);
+}
+
+/* ─── Capture and display one RAW QVGA frame ────────────────────────────── */
+static void UI_CaptureAndShow(void)
+{
+    /* ── 1. Flush FIFO and trigger capture ── */
+    Cam_SPI_Write(0x04, 0x01);  /* flush FIFO */
+    HAL_Delay(10);
+    Cam_SPI_Write(0x04, 0x02);  /* start capture */
+
+    /* ── 2. Wait for capture done flag ── */
+    uint32_t timeout = HAL_GetTick() + 3000U;
+    while (!(Cam_SPI_Read(ARDUCHIP_TRIG) & CAP_DONE_MASK))
+    {
+        if (HAL_GetTick() > timeout)
+        {
+            /* Timed out — show error and return */
+            ST7796_FillScreen(ST7796_BLACK);
+            ST7796_DrawString(100, 150, "CAPTURE FAILED", ST7796_RED, ST7796_BLACK, 2);
+            HAL_Delay(1500);
+            return;
+        }
+    }
+
+    /* ── 3. Clear screen, draw header ── */
+    ST7796_FillScreen(ST7796_BLACK);
+    ST7796_DrawString(20, 6, "TAP ANYWHERE OR PRESS BUTTON TO EXIT",
+                      ST7796_WHITE, ST7796_BLACK, 1);
+    ST7796_DrawHLine(0, 22, ST7796_WIDTH, ST7796_DARKGREY);
+
+    /* ── 4. Set display window — centre 320x240 on screen ── */
+  
+    uint16_t img_x = (ST7796_WIDTH  - QVGA_W) / 2U;   /* = 80 in landscape */
+    uint16_t img_y = 28U;                               /* just below header */
+
+    /* Open the address window on the display */
+    ST7796_WriteCmd(0x2A);
+    ST7796_WriteData8(img_x >> 8);
+    ST7796_WriteData8(img_x & 0xFF);
+    uint16_t x1 = img_x + QVGA_W - 1U;
+    ST7796_WriteData8(x1 >> 8);
+    ST7796_WriteData8(x1 & 0xFF);
+
+    ST7796_WriteCmd(0x2B);
+    ST7796_WriteData8(img_y >> 8);
+    ST7796_WriteData8(img_y & 0xFF);
+    uint16_t y1 = img_y + QVGA_H - 1U;
+    ST7796_WriteData8(y1 >> 8);
+    ST7796_WriteData8(y1 & 0xFF);
+
+    ST7796_WriteCmd(0x2C);
+
+    /* ── 5. Burst read from ArduCAM → stream to display ── */
+    uint8_t  burst_cmd = 0x3C;
+    uint8_t  dummy     = 0;
+    uint8_t  chunk[CAM_CHUNK_BYTES];
+    uint32_t bytes_sent = 0;
+
+    Cam_CS_Low();
+    HAL_SPI_Transmit(&hspi2, &burst_cmd, 1, 10);  /* send burst read command */
+    HAL_SPI_Receive (&hspi2, &dummy,     1, 10);  /* discard first dummy byte */
+
+    ST7796_CS_Low();   /* assert display CS */
+
+    /* Set display DC HIGH (data mode) */
+    HAL_GPIO_WritePin(ST7796_DC_PORT, ST7796_DC_PIN, GPIO_PIN_SET);
+
+    while (bytes_sent < QVGA_BYTES)
+    {
+        uint32_t remaining   = QVGA_BYTES - bytes_sent;
+        uint32_t chunk_bytes = (remaining > CAM_CHUNK_BYTES) ?
+                                CAM_CHUNK_BYTES : remaining;
+
+        /* Read chunk from ArduCAM over its SPI */
+        HAL_SPI_Receive(&hspi2, chunk, (uint16_t)chunk_bytes, 100);
+
+        /* Write chunk to display over its SPI */
+        HAL_SPI_Transmit(&hspi1, chunk, (uint16_t)chunk_bytes, 100);
+
+        bytes_sent += chunk_bytes;
+    }
+
+    ST7796_CS_High();  /* release display */
+    Cam_CS_High();     /* release ArduCAM */
+}
+
+/* ─── Wait for any input then return to dashboard ───────────────────────── */
+static void UI_WaitForExitThenDashboard(
+        int screenTemp, int humidity,
+        uint8_t lightOn, uint8_t baskingOccupied,
+        uint8_t tempShowCurrent, uint8_t humShowCurrent)
+{
+    uint8_t exit_view = 0;
+
+    while (!exit_view)
+    {
+        /* Touch anywhere */
+        uint16_t tx, ty;
+        if (Touch_GetPoint(&tx, &ty))
+        {
+            exit_view = 1;
+        }
+
+        /* Any BT remote button */
+        if (bt_rx_ready)
+        {
+            bt_rx_ready = 0;  /* consume — don't process as a command */
+            exit_view = 1;
+        }
+
+        HAL_Delay(15);
+    }
+
+    /* Redraw full dashboard */
+    UI_DrawAll(screenTemp, humidity, lightOn, baskingOccupied);
+}
+
+
+BUTTON HANDLER:
+else if (Button_Contains(&BTN_CAMERA, x, y))
+{
+    UI_DrawCameraPanel(baskingOccupied, 1);
+    HAL_Delay(120);
+    UI_CaptureAndShow();
+    UI_WaitForExitThenDashboard(screenTemp, humidity, lightOn,
+                                baskingOccupied,
+                                tempShowCurrent, humShowCurrent);
+}
+
+
+
+BT RX:
+
+case BT_CMD_CAMERA:
+    UI_DrawCameraPanel(baskingOccupied, 1);
+    HAL_Delay(120);
+    UI_CaptureAndShow();
+    UI_WaitForExitThenDashboard(screenTemp, humidity, lightOn,
+                                baskingOccupied,
+                                tempShowCurrent, humShowCurrent);
+    break;
+
+
+
+ST7796.h;
+#define ST7796_DARKGREY   RGB565(64, 64, 64)
