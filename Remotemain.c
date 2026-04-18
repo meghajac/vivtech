@@ -58,14 +58,6 @@ typedef struct {
     uint8_t       last_sent;
 } RemoteButton_t;
 
-static RemoteButton_t s_buttons[6] = {
-    { GPIOB, GPIO_PIN_4,  BT_CMD_TEMP_UP,   0, 0 },  /* PB4  - Heat Up    */
-    { GPIOB, GPIO_PIN_5,  BT_CMD_TEMP_DOWN, 0, 0 },  /* PB5  - Heat Down  */
-    { GPIOA, GPIO_PIN_8,  BT_CMD_HUM_UP,    0, 0 },  /* PA8  - Humid Up   */
-    { GPIOA, GPIO_PIN_11, BT_CMD_HUM_DOWN,  0, 0 },  /* PA11 - Humid Down */
-    { GPIOA, GPIO_PIN_12, BT_CMD_CAMERA,    0, 0 },  /* PA12 - Camera     */
-    { GPIOB, GPIO_PIN_0,  BT_CMD_LIGHT,     0, 0 },  /* PB0  - Light      */
-};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -155,7 +147,7 @@ int main(void)
 	    }
 
 	    /* CAMERA - PA12 */
-	    if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_12) == GPIO_PIN_RESET)
+	    if (HAL_GPIO_ReadPin(GPIOA, GPIO_PIN_8) == GPIO_PIN_RESET)
 	    {
 	        uint8_t cmd = BT_CMD_CAMERA;
 	        HAL_UART_Transmit(&huart2, &cmd, 1, 100);
