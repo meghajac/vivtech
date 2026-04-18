@@ -1,4 +1,45 @@
- *    void ST7796_WriteCmd(uint8_t cmd);
- *    void ST7796_WriteData8(uint8_t data);
- *    void ST7796_CS_Low(void);
- *    void ST7796_CS_High(void);
+error messages:
+19:47:29 **** Incremental Build of configuration Debug for project Milestone2 ****
+make -j20 all 
+arm-none-eabi-gcc "../Core/Src/arducam.c" -mcpu=cortex-m4 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32L4R5xx -c -I../Core/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32L4xx/Include -I../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Core/Src/arducam.d" -MT"Core/Src/arducam.o" --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -o "Core/Src/arducam.o"
+arm-none-eabi-gcc "../Core/Src/main.c" -mcpu=cortex-m4 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32L4R5xx -c -I../Core/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32L4xx/Include -I../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Core/Src/main.d" -MT"Core/Src/main.o" --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -o "Core/Src/main.o"
+arm-none-eabi-gcc "../Core/Src/st7796.c" -mcpu=cortex-m4 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32L4R5xx -c -I../Core/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32L4xx/Include -I../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Core/Src/st7796.d" -MT"Core/Src/st7796.o" --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -o "Core/Src/st7796.o"
+arm-none-eabi-gcc "../Core/Src/xpt2046.c" -mcpu=cortex-m4 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32L4R5xx -c -I../Core/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32L4xx/Include -I../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Core/Src/xpt2046.d" -MT"Core/Src/xpt2046.o" --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -o "Core/Src/xpt2046.o"
+../Core/Src/st7796.c:41:13: error: static declaration of 'ST7796_WriteCommand' follows non-static declaration
+   41 | static void ST7796_WriteCommand(uint8_t cmd)
+      |             ^~~~~~~~~~~~~~~~~~~
+In file included from ../Core/Src/st7796.c:1:
+../Core/Inc/st7796.h:47:6: note: previous declaration of 'ST7796_WriteCommand' with type 'void(uint8_t)' {aka 'void(unsigned char)'}
+   47 | void ST7796_WriteCommand(uint8_t cmd);
+      |      ^~~~~~~~~~~~~~~~~~~
+../Core/Src/st7796.c:49:13: error: conflicting types for 'ST7796_WriteData'; have 'void(uint8_t *, uint16_t)' {aka 'void(unsigned char *, short unsigned int)'}
+   49 | static void ST7796_WriteData(uint8_t *data, uint16_t size)
+      |             ^~~~~~~~~~~~~~~~
+../Core/Inc/st7796.h:48:6: note: previous declaration of 'ST7796_WriteData' with type 'void(uint8_t)' {aka 'void(unsigned char)'}
+   48 | void ST7796_WriteData(uint8_t data);
+      |      ^~~~~~~~~~~~~~~~
+make: *** [Core/Src/subdir.mk:43: Core/Src/st7796.o] Error 1
+make: *** Waiting for unfinished jobs....
+../Core/Src/main.c:49: warning: "ARDUCAM_CS_PORT" redefined
+   49 | #define ARDUCAM_CS_PORT     GPIOG
+      | 
+In file included from ../Core/Src/main.c:29:
+../Core/Inc/arducam.h:22: note: this is the location of the previous definition
+   22 | #define ARDUCAM_CS_PORT         GPIOD
+      | 
+../Core/Src/main.c:50: warning: "ARDUCAM_CS_PIN" redefined
+   50 | #define ARDUCAM_CS_PIN      GPIO_PIN_12
+      | 
+../Core/Inc/arducam.h:23: note: this is the location of the previous definition
+   23 | #define ARDUCAM_CS_PIN          GPIO_PIN_14
+      | 
+../Core/Src/main.c:545:13: warning: 'Cam_Init_RAW' defined but not used [-Wunused-function]
+  545 | static void Cam_Init_RAW(void)
+      |             ^~~~~~~~~~~~
+../Core/Src/main.c:533:16: warning: 'Cam_SPI_Read' defined but not used [-Wunused-function]
+  533 | static uint8_t Cam_SPI_Read(uint8_t reg)
+      |                ^~~~~~~~~~~~
+"make -j20 all" terminated with exit code 2. Build might be incomplete.
+
+19:47:32 Build Failed. 4 errors, 4 warnings. (took 2s.561ms)
+
