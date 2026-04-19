@@ -57,8 +57,8 @@ static void MX_LPUART1_UART_Init(void);
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
 int32_t raw_weight = 0;
-float scale_factor = 30.4;
-int32_t tare_offset = 0;
+float scale_factor = 1543.78;
+int32_t tare_offset = -1037250;
 int32_t HX711_Read(void) {
     int32_t buffer = 0;
     uint32_t timeout = 0;
@@ -140,10 +140,10 @@ int main(void)
   for(int i = 0; i < 10; i++) {
       while(HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == GPIO_PIN_SET); // Wait for ready
       sum += HX711_Read();
-      HAL_Delay(100);
+     HAL_Delay(100);
   }
   tare_offset = sum / 10; // Average of 10 readings
-  printf("Tare complete: %ld\r\n", tare_offset);
+    printf("Tare complete: %ld\r\n", tare_offset);
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -155,22 +155,22 @@ int main(void)
     /* USER CODE BEGIN 3 */
 	  //HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_1);
 	 // HAL_Delay(1000);
-	 // raw_weight = HX711_Read();
-	  //  printf("Raw ADC Count: %ld\r\n", raw_weight);
+	//  raw_weight = HX711_Read();
+	 //   printf("Raw ADC Count: %ld\r\n", raw_weight);
 
-	  //  HAL_Delay(100); // Small delay to make the terminal readable
+	    //HAL_Delay(100); // Small delay to make the terminal readable
 	  if (HAL_GPIO_ReadPin(GPIOC, GPIO_PIN_0) == GPIO_PIN_RESET) {
 	      int32_t raw = HX711_Read();
 
-	      // We subtract raw from offset to keep the result positive
+//	      // We subtract raw from offset to keep the result positive
 	      float grams = (float)(tare_offset - raw) / scale_factor;
-
-	      // Simple filter: if weight is very small, just show 0.0
+	      grams = fabsf(grams);
+//	      // Simple filter: if weight is very small, just show 0.0
 	      if (grams < 2.0 && grams > -2.0) grams = 0.0;
-
+//
 	      printf("Weight: %.1f g\r\n", grams);
 	  }
-	      // Small pause to prevent the CPU from "hammering" the pin
+//	      // Small pause to prevent the CPU from "hammering" the pin
 	      HAL_Delay(10);
   }
   /* USER CODE END 3 */
