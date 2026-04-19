@@ -28,6 +28,7 @@ extern SPI_HandleTypeDef hspi1;
 #define ST7796_WHITE        0xFFFF
 #define ST7796_ORANGE       0xFD20
 #define ST7796_GRAY         0x8410
+#define ST7796_DARKGREY     0x7bae
 
 extern uint16_t ST7796_WIDTH;
 extern uint16_t ST7796_HEIGHT;
@@ -43,5 +44,8 @@ void ST7796_DrawChar(uint16_t x, uint16_t y, char ch,
                      uint16_t fg, uint16_t bg, uint8_t scale);
 void ST7796_DrawString(uint16_t x, uint16_t y, const char *str,
                        uint16_t fg, uint16_t bg, uint8_t scale);
+void ST7796_SetAddrWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
+void ST7796_CS_Low(void);
+void ST7796_CS_High(void);
 
 #endif

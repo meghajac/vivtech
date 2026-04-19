@@ -16,6 +16,17 @@ static void ST7796_Unselect(void)
     HAL_GPIO_WritePin(ST7796_CS_PORT, ST7796_CS_PIN, GPIO_PIN_SET);
 }
 
+/* Public CS helpers used by arducam.c during pixel streaming */
+void ST7796_CS_Low(void)
+{
+    HAL_GPIO_WritePin(ST7796_CS_PORT, ST7796_CS_PIN, GPIO_PIN_RESET);
+}
+
+void ST7796_CS_High(void)
+{
+    HAL_GPIO_WritePin(ST7796_CS_PORT, ST7796_CS_PIN, GPIO_PIN_SET);
+}
+
 static void ST7796_DC_Command(void)
 {
     HAL_GPIO_WritePin(ST7796_DC_PORT, ST7796_DC_PIN, GPIO_PIN_RESET);
@@ -59,7 +70,7 @@ static void ST7796_WriteDataByte(uint8_t data)
     ST7796_WriteData(&data, 1);
 }
 
-static void ST7796_SetAddrWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
+void ST7796_SetAddrWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1)
 {
     uint8_t data[4];
 

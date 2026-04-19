@@ -26,6 +26,7 @@
 #include "st7796.h"
 #include <stdlib.h>
 #include "pid.h"
+#include "arducam.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -41,6 +42,16 @@
 #define BT_CMD_HUM_DOWN     'D'
 #define BT_CMD_CAMERA       'E'
 #define BT_CMD_LIGHT        'F'
+
+/* ArduCAM SPI registers */
+#define ARDUCHIP_TRIG       0x41
+#define CAP_DONE_MASK       0x08
+
+/* Image dimensions */
+#define QVGA_W              320U
+#define QVGA_H              240U
+#define QVGA_BYTES          (QVGA_W * QVGA_H * 2U)   /* 153,600 */
+#define CAM_CHUNK_BYTES     640U   /* one row at a time = 320px x 2 bytes */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -50,6 +61,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 I2C_HandleTypeDef hi2c2;
+I2C_HandleTypeDef hi2c3;
 
 SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi2;
@@ -70,6 +82,7 @@ static void MX_SPI2_Init(void);
 static void MX_I2C2_Init(void);
 static void MX_SPI3_Init(void);
 static void MX_USART2_UART_Init(void);
+static void MX_I2C3_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -82,29 +95,29 @@ float Temperature, Temperature_C, Humidity;
 void AHT20_Init (void) {
 	HAL_Delay(40);
 		uint8_t status;
-		HAL_I2C_Mem_Read(&hi2c2, AHT20_ADDRESS, 0x71, 1, &status, 1, 1000);
+		HAL_I2C_Mem_Read(&hi2c3, AHT20_ADDRESS, 0x71, 1, &status, 1, 1000);
 		if ((status>>3 & 0x01) == 0)  // if CAL = 0
 		{
 			uint8_t init_commands[3] = {0xBE, 0x08, 0x00};
-			HAL_I2C_Master_Transmit(&hi2c2, AHT20_ADDRESS, init_commands, 3, 1000);
+			HAL_I2C_Master_Transmit(&hi2c3, AHT20_ADDRESS, init_commands, 3, 1000);
 			HAL_Delay (10);
 		}
 }
 void AHT20_Measure (void)
 {
 	uint8_t measure_command[3] = {0xAC, 0x33, 0x00};
-	HAL_I2C_Master_Transmit(&hi2c2, AHT20_ADDRESS, measure_command, 3, 1000);
+	HAL_I2C_Master_Transmit(&hi2c3, AHT20_ADDRESS, measure_command, 3, 1000);
 	HAL_Delay(80);
 
 	uint8_t status;
 	do {
-		HAL_I2C_Mem_Read(&hi2c2, AHT20_ADDRESS, 0x71, 1, &status, 1, 1000);
+		HAL_I2C_Mem_Read(&hi2c3, AHT20_ADDRESS, 0x71, 1, &status, 1, 1000);
 		HAL_Delay(100);
 	}
 	while ((status>>7 & 0x01) == 1);
 
 	uint8_t RxData[7];
-	HAL_I2C_Master_Receive(&hi2c2, AHT20_ADDRESS, RxData, 7, 1000);
+	HAL_I2C_Master_Receive(&hi2c3, AHT20_ADDRESS, RxData, 7, 1000);
 
 uint32_t HUM_DATA = (RxData[1]<<16)|(RxData[2]<<8)|RxData[3];  // accumulated 24bit data
 HUM_DATA = HUM_DATA>>4;  // 20bit data
@@ -497,6 +510,86 @@ static void UI_DrawBaskingStatus(uint8_t occupied)
         UI_FillCircle(BTN_BASKING.x + 136, BTN_BASKING.y + 10, 5, ST7796_GRAY);
     }
 }
+
+
+/* ─── Camera capture + display ─────────────────────────────────────────── */
+static void UI_CaptureAndShow(void)
+{
+    /* ── 1. Clear screen and draw header ── */
+    ST7796_FillScreen(ST7796_BLACK);
+    ST7796_DrawString(10, 8, "TAP SCREEN OR PRESS BUTTON TO EXIT",
+                      ST7796_WHITE, ST7796_BLACK, 1);
+    ST7796_DrawHLine(0, 22, ST7796_WIDTH, ST7796_DARKGREY);
+
+    /* Show "capturing" message while we wait */
+    ST7796_DrawString(160, 160, "CAPTURING...", ST7796_YELLOW, ST7796_BLACK, 2);
+
+    /* ── 2. Set display window for the image ── */
+    /*
+     * Display is landscape 480x320.
+     * Image is QVGA 320x240.
+     * Centre it: x offset = (480-320)/2 = 80, y offset = 28 (below header)
+     */
+    uint16_t img_x = (ST7796_WIDTH  - 320U) / 2U;  /* 80 */
+    uint16_t img_y = 28U;
+
+    /* Open the address window on the ST7796 — sends CASET, RASET, RAMWR */
+
+    /* ── 3. Capture and stream directly to display ── */
+    uint8_t result = Arducam_CaptureDecodeDisplay();
+
+    if (result == ARDUCAM_ERR_TIMEOUT)
+    {
+        ST7796_FillScreen(ST7796_BLACK);
+        ST7796_DrawString(60, 150, "CAPTURE TIMEOUT", ST7796_RED,   ST7796_BLACK, 2);
+        ST7796_DrawString(60, 175, "TAP TO RETURN",   ST7796_WHITE, ST7796_BLACK, 1);
+    }
+    else if (result == ARDUCAM_ERR_DECODE || result == ARDUCAM_ERR_SIZE)
+    {
+        ST7796_FillScreen(ST7796_BLACK);
+        ST7796_DrawString(80, 150, "DECODE ERROR",  ST7796_RED,   ST7796_BLACK, 2);
+        ST7796_DrawString(60, 175, "TAP TO RETURN", ST7796_WHITE, ST7796_BLACK, 1);
+    }
+}
+
+
+/* ─── Wait for any input, then redraw the dashboard ────────────────────── */
+static void UI_WaitForExitThenDashboard(
+        int     screenTemp,
+        int     humidity,
+        uint8_t lightOn,
+        uint8_t baskingOccupied,
+        uint8_t tempShowCurrent,
+        uint8_t humShowCurrent)
+{
+    uint8_t exit_view = 0;
+
+    /* Drain any stale touch event from the capture tap */
+    HAL_Delay(300);
+
+    while (!exit_view)
+    {
+        /* Touch anywhere exits */
+        uint16_t tx, ty;
+        if (Touch_GetPoint(&tx, &ty))
+        {
+            exit_view = 1;
+        }
+
+        /* Any BT remote button exits (consume without acting on it) */
+        if (bt_rx_ready)
+        {
+            bt_rx_ready = 0;
+            exit_view   = 1;
+        }
+
+        HAL_Delay(15);
+    }
+
+    /* Repaint the full dashboard */
+    UI_DrawAll(screenTemp, humidity, lightOn, baskingOccupied);
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -533,6 +626,7 @@ int main(void)
   MX_I2C2_Init();
   MX_SPI3_Init();
   MX_USART2_UART_Init();
+  MX_I2C3_Init();
   /* USER CODE BEGIN 2 */
    HAL_UART_Receive_IT(&huart2, (uint8_t *)&bt_rx_byte, 1);
    int screenTemp = 85;
@@ -546,6 +640,19 @@ int main(void)
    ST7796_Init();
    XPT2046_Init();
    AHT20_Init();
+
+   HAL_GPIO_WritePin(GPIOG, GPIO_PIN_12, GPIO_PIN_SET);
+   HAL_Delay(10);
+
+   uint8_t cam_err = OV2640_JPEG_Init();
+   if (cam_err != ARDUCAM_OK)
+   {
+       /* SPI to ArduCAM chip not working — show error and halt */
+       ST7796_FillScreen(ST7796_BLACK);
+       ST7796_DrawString(60, 140, "CAM SPI FAILED", ST7796_RED, ST7796_BLACK, 2);
+       ST7796_DrawString(40, 165, "CHECK WIRING+NSSPMode", ST7796_WHITE, ST7796_BLACK, 1);
+       while (1) {}
+   }
 
    UI_DrawAll(screenTemp, humidity, lightOn, baskingOccupied);
    LightLed_Set(lightOn);
@@ -620,7 +727,10 @@ int main(void)
 	          {
 	              UI_DrawCameraPanel(baskingOccupied, 1);
 	              HAL_Delay(120);
-	              UI_DrawCameraPanel(baskingOccupied, 0);
+	              UI_CaptureAndShow();
+	              UI_WaitForExitThenDashboard(screenTemp, humidity, lightOn,
+	                                          baskingOccupied,
+	                                          tempShowCurrent, humShowCurrent);
 	          }
 	          else if (Button_Contains(&BTN_BASKING, x, y))
 	          {
@@ -674,7 +784,10 @@ int main(void)
 	          case BT_CMD_CAMERA:
 	              UI_DrawCameraPanel(baskingOccupied, 1);
 	              HAL_Delay(120);
-	              UI_DrawCameraPanel(baskingOccupied, 0);
+	              UI_CaptureAndShow();
+	              UI_WaitForExitThenDashboard(screenTemp, humidity, lightOn,
+	                                          baskingOccupied,
+	                                          tempShowCurrent, humShowCurrent);
 	              break;
 
 	          default:
@@ -807,6 +920,54 @@ static void MX_I2C2_Init(void)
 }
 
 /**
+  * @brief I2C3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C3_Init(void)
+{
+
+  /* USER CODE BEGIN I2C3_Init 0 */
+
+  /* USER CODE END I2C3_Init 0 */
+
+  /* USER CODE BEGIN I2C3_Init 1 */
+
+  /* USER CODE END I2C3_Init 1 */
+  hi2c3.Instance = I2C3;
+  hi2c3.Init.Timing = 0x10A077A8;
+  hi2c3.Init.OwnAddress1 = 0;
+  hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c3.Init.OwnAddress2 = 0;
+  hi2c3.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c3.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c3.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c3, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c3, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C3_Init 2 */
+
+  /* USER CODE END I2C3_Init 2 */
+
+}
+
+/**
   * @brief SPI1 Initialization Function
   * @param None
   * @retval None
@@ -905,17 +1066,17 @@ static void MX_SPI3_Init(void)
   hspi3.Instance = SPI3;
   hspi3.Init.Mode = SPI_MODE_MASTER;
   hspi3.Init.Direction = SPI_DIRECTION_2LINES;
-  hspi3.Init.DataSize = SPI_DATASIZE_4BIT;
+  hspi3.Init.DataSize = SPI_DATASIZE_8BIT;
   hspi3.Init.CLKPolarity = SPI_POLARITY_LOW;
   hspi3.Init.CLKPhase = SPI_PHASE_1EDGE;
   hspi3.Init.NSS = SPI_NSS_SOFT;
-  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_2;
+  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
   hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;
   hspi3.Init.TIMode = SPI_TIMODE_DISABLE;
   hspi3.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
   hspi3.Init.CRCPolynomial = 7;
   hspi3.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
-  hspi3.Init.NSSPMode = SPI_NSS_PULSE_ENABLE;
+  hspi3.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;
   if (HAL_SPI_Init(&hspi3) != HAL_OK)
   {
     Error_Handler();
