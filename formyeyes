@@ -1,45 +1,113 @@
-error messages:
-19:47:29 **** Incremental Build of configuration Debug for project Milestone2 ****
-make -j20 all 
-arm-none-eabi-gcc "../Core/Src/arducam.c" -mcpu=cortex-m4 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32L4R5xx -c -I../Core/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32L4xx/Include -I../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Core/Src/arducam.d" -MT"Core/Src/arducam.o" --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -o "Core/Src/arducam.o"
-arm-none-eabi-gcc "../Core/Src/main.c" -mcpu=cortex-m4 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32L4R5xx -c -I../Core/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32L4xx/Include -I../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Core/Src/main.d" -MT"Core/Src/main.o" --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -o "Core/Src/main.o"
-arm-none-eabi-gcc "../Core/Src/st7796.c" -mcpu=cortex-m4 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32L4R5xx -c -I../Core/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32L4xx/Include -I../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Core/Src/st7796.d" -MT"Core/Src/st7796.o" --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -o "Core/Src/st7796.o"
-arm-none-eabi-gcc "../Core/Src/xpt2046.c" -mcpu=cortex-m4 -std=gnu11 -g3 -DDEBUG -DUSE_HAL_DRIVER -DSTM32L4R5xx -c -I../Core/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc -I../Drivers/STM32L4xx_HAL_Driver/Inc/Legacy -I../Drivers/CMSIS/Device/ST/STM32L4xx/Include -I../Drivers/CMSIS/Include -O0 -ffunction-sections -fdata-sections -Wall -fstack-usage -fcyclomatic-complexity -MMD -MP -MF"Core/Src/xpt2046.d" -MT"Core/Src/xpt2046.o" --specs=nano.specs -mfpu=fpv4-sp-d16 -mfloat-abi=hard -mthumb -o "Core/Src/xpt2046.o"
-../Core/Src/st7796.c:41:13: error: static declaration of 'ST7796_WriteCommand' follows non-static declaration
-   41 | static void ST7796_WriteCommand(uint8_t cmd)
-      |             ^~~~~~~~~~~~~~~~~~~
-In file included from ../Core/Src/st7796.c:1:
-../Core/Inc/st7796.h:47:6: note: previous declaration of 'ST7796_WriteCommand' with type 'void(uint8_t)' {aka 'void(unsigned char)'}
-   47 | void ST7796_WriteCommand(uint8_t cmd);
-      |      ^~~~~~~~~~~~~~~~~~~
-../Core/Src/st7796.c:49:13: error: conflicting types for 'ST7796_WriteData'; have 'void(uint8_t *, uint16_t)' {aka 'void(unsigned char *, short unsigned int)'}
-   49 | static void ST7796_WriteData(uint8_t *data, uint16_t size)
-      |             ^~~~~~~~~~~~~~~~
-../Core/Inc/st7796.h:48:6: note: previous declaration of 'ST7796_WriteData' with type 'void(uint8_t)' {aka 'void(unsigned char)'}
-   48 | void ST7796_WriteData(uint8_t data);
-      |      ^~~~~~~~~~~~~~~~
-make: *** [Core/Src/subdir.mk:43: Core/Src/st7796.o] Error 1
-make: *** Waiting for unfinished jobs....
-../Core/Src/main.c:49: warning: "ARDUCAM_CS_PORT" redefined
-   49 | #define ARDUCAM_CS_PORT     GPIOG
-      | 
-In file included from ../Core/Src/main.c:29:
-../Core/Inc/arducam.h:22: note: this is the location of the previous definition
-   22 | #define ARDUCAM_CS_PORT         GPIOD
-      | 
-../Core/Src/main.c:50: warning: "ARDUCAM_CS_PIN" redefined
-   50 | #define ARDUCAM_CS_PIN      GPIO_PIN_12
-      | 
-../Core/Inc/arducam.h:23: note: this is the location of the previous definition
-   23 | #define ARDUCAM_CS_PIN          GPIO_PIN_14
-      | 
-../Core/Src/main.c:545:13: warning: 'Cam_Init_RAW' defined but not used [-Wunused-function]
-  545 | static void Cam_Init_RAW(void)
-      |             ^~~~~~~~~~~~
-../Core/Src/main.c:533:16: warning: 'Cam_SPI_Read' defined but not used [-Wunused-function]
-  533 | static uint8_t Cam_SPI_Read(uint8_t reg)
-      |                ^~~~~~~~~~~~
-"make -j20 all" terminated with exit code 2. Build might be incomplete.
+typedef enum
+{
+    HUMIDIFIER_MODE_OFF = 0,
+    HUMIDIFIER_MODE_ALWAYS_ON,
+    HUMIDIFIER_MODE_CONT_PULSE
+} HumidifierMode_t;
 
-19:47:32 Build Failed. 4 errors, 4 warnings. (took 2s.561ms)
+static HumidifierMode_t humidifier_mode = HUMIDIFIER_MODE_OFF;
+static uint32_t last_humidifier_burst_tick = 0;
 
+#define HUMIDIFIER_BUTTON_MS    50U
+#define HUMIDIFIER_MODE_GAP_MS  50U
+#define HUMIDIFIER_SPRAY_MS     50U
+#define HUMIDIFIER_SETTLE_MS    180000U   /* 3 minutes */
+#define HUMIDITY_HYSTERESIS_PCT 1.0f
+
+static void humidifier_button_press(void)
+{
+    /* Simulate one mode-button press */
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_RESET);
+    HAL_Delay(HUMIDIFIER_BUTTON_MS);
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_SET);
+    HAL_Delay(HUMIDIFIER_MODE_GAP_MS);
+}
+
+static void humidifier_advance_mode(void)
+{
+    humidifier_button_press();
+
+    if (humidifier_mode == HUMIDIFIER_MODE_OFF)
+    {
+        humidifier_mode = HUMIDIFIER_MODE_ALWAYS_ON;
+    }
+    else if (humidifier_mode == HUMIDIFIER_MODE_ALWAYS_ON)
+    {
+        humidifier_mode = HUMIDIFIER_MODE_CONT_PULSE;
+    }
+    else
+    {
+        humidifier_mode = HUMIDIFIER_MODE_OFF;
+    }
+}
+
+static void humidifier_set_mode(HumidifierMode_t target)
+{
+    while (humidifier_mode != target)
+    {
+        humidifier_advance_mode();
+    }
+}
+
+static void humidifier_spray_burst(void)
+{
+    /* OFF -> ALWAYS ON */
+    humidifier_set_mode(HUMIDIFIER_MODE_ALWAYS_ON);
+
+    /* stay in ALWAYS ON briefly to produce one mist burst */
+    HAL_Delay(HUMIDIFIER_SPRAY_MS);
+
+    /* ALWAYS ON -> CONT_PULSE -> OFF */
+    humidifier_set_mode(HUMIDIFIER_MODE_OFF);
+
+    last_humidifier_burst_tick = HAL_GetTick();
+}
+
+static void humidifier_update(uint32_t now_ms, float current_humidity, int desired_humidity)
+{
+    /* Do nothing if we are already at/above target (with a little hysteresis) */
+    if (current_humidity >= ((float)desired_humidity - HUMIDITY_HYSTERESIS_PCT))
+    {
+        return;
+    }
+
+    /* Wait after each burst so humidity has time to spread through the tank */
+    if ((now_ms - last_humidifier_burst_tick) < HUMIDIFIER_SETTLE_MS)
+    {
+        return;
+    }
+
+    humidifier_spray_burst();
+}
+
+
+
+
+HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_SET);   /* idle high */
+humidifier_mode = HUMIDIFIER_MODE_OFF;
+
+/* allow an immediate first spray if startup humidity is low */
+last_humidifier_burst_tick = HAL_GetTick() - HUMIDIFIER_SETTLE_MS;
+
+
+
+
+if (now - last_sensor_tick >= SENSOR_INTERVAL_MS)
+{
+    last_sensor_tick = now;
+
+    AHT20_Measure();
+
+    humidifier_update(now, Humidity, humidity);
+
+    PIDloop(Temperature, screenTemp, kp, ki, kd, false);
+
+    if (tempShowCurrent)
+    {
+        UI_Draw2DigitValue(TEMP_X + 20, TEMP_Y + 30, (int)Temperature, ST7796_WHITE);
+    }
+    if (humShowCurrent)
+    {
+        UI_Draw2DigitValue(HUM_X + 20, HUM_Y + 30, (int)Humidity, ST7796_WHITE);
+    }
+}
