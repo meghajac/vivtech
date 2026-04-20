@@ -25,6 +25,8 @@
 #include "xpt2046.h"
 #include "st7796.h"
 #include <stdlib.h>
+#include "pid.h"
+#include "arducam.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -34,7 +36,22 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
+#define BT_CMD_TEMP_UP      'A'
+#define BT_CMD_TEMP_DOWN    'B'
+#define BT_CMD_HUM_UP       'C'
+#define BT_CMD_HUM_DOWN     'D'
+#define BT_CMD_CAMERA       'E'
+#define BT_CMD_LIGHT        'F'
 
+/* ArduCAM SPI registers */
+#define ARDUCHIP_TRIG       0x41
+#define CAP_DONE_MASK       0x08
+
+/* Image dimensions */
+#define QVGA_W              320U
+#define QVGA_H              240U
+#define QVGA_BYTES          (QVGA_W * QVGA_H * 2U)   /* 153,600 */
+#define CAM_CHUNK_BYTES     640U   /* one row at a time = 320px x 2 bytes */
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -43,11 +60,18 @@
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
+I2C_HandleTypeDef hi2c2;
+I2C_HandleTypeDef hi2c3;
+
 SPI_HandleTypeDef hspi1;
 SPI_HandleTypeDef hspi2;
+SPI_HandleTypeDef hspi3;
+
+UART_HandleTypeDef huart2;
 
 /* USER CODE BEGIN PV */
-
+volatile uint8_t bt_rx_byte  = 0;   /* filled by ISR */
+volatile uint8_t bt_rx_ready = 0;   /* flag: 1 = new command waiting */
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -55,19 +79,60 @@ void SystemClock_Config(void);
 static void MX_GPIO_Init(void);
 static void MX_SPI1_Init(void);
 static void MX_SPI2_Init(void);
+static void MX_I2C2_Init(void);
+static void MX_SPI3_Init(void);
+static void MX_USART2_UART_Init(void);
+static void MX_I2C3_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-#define LED_PORT GPIOC
-#define LED_PIN  GPIO_PIN_8
-
-static void LightLed_Set(uint8_t on)
-{
-    HAL_GPIO_WritePin(LED_PORT, LED_PIN, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+// PID CODE
+#define AHT20_ADDRESS 0x38<<1
+float Temperature, Temperature_C, Humidity;
+void AHT20_Init (void) {
+	HAL_Delay(40);
+		uint8_t status;
+		HAL_I2C_Mem_Read(&hi2c3, AHT20_ADDRESS, 0x71, 1, &status, 1, 1000);
+		if ((status>>3 & 0x01) == 0)  // if CAL = 0
+		{
+			uint8_t init_commands[3] = {0xBE, 0x08, 0x00};
+			HAL_I2C_Master_Transmit(&hi2c3, AHT20_ADDRESS, init_commands, 3, 1000);
+			HAL_Delay (10);
+		}
 }
+void AHT20_Measure (void)
+{
+	uint8_t measure_command[3] = {0xAC, 0x33, 0x00};
+	HAL_I2C_Master_Transmit(&hi2c3, AHT20_ADDRESS, measure_command, 3, 1000);
+	HAL_Delay(80);
+
+	uint8_t status;
+	do {
+		HAL_I2C_Mem_Read(&hi2c3, AHT20_ADDRESS, 0x71, 1, &status, 1, 1000);
+		HAL_Delay(100);
+	}
+	while ((status>>7 & 0x01) == 1);
+
+	uint8_t RxData[7];
+	HAL_I2C_Master_Receive(&hi2c3, AHT20_ADDRESS, RxData, 7, 1000);
+
+uint32_t HUM_DATA = (RxData[1]<<16)|(RxData[2]<<8)|RxData[3];  // accumulated 24bit data
+HUM_DATA = HUM_DATA>>4;  // 20bit data
+Humidity = (float) ((HUM_DATA/pow(2,20)) * 100);
+uint32_t TEMP_DATA = (RxData[3]<<16)|(RxData[4]<<8)|RxData[5];  // accumulated 24bit data
+TEMP_DATA = TEMP_DATA&0xFFFFF;  // first 20bit data
+Temperature_C = (float) (((TEMP_DATA/pow(2,20)) * 200) - 50);
+Temperature = (Temperature_C * 1.8f) + 32.0f;
+}
+
+
+
+
+#define LED_PORT GPIOG
+#define LED_PIN  GPIO_PIN_0
 
 typedef struct
 {
@@ -76,6 +141,15 @@ typedef struct
     uint16_t w;
     uint16_t h;
 } Button_t;
+
+static void UI_DrawLightIndicatorSmall(uint16_t panelX, uint16_t panelY, uint8_t on);
+static void UI_DrawCameraButton(const Button_t *btn, uint8_t pressed);
+static void UI_DrawBaskingStatus(uint8_t occupied);
+
+static void LightLed_Set(uint8_t on)
+{
+    HAL_GPIO_WritePin(LED_PORT, LED_PIN, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
+}
 
 /* ---------- Layout ---------- */
 #define TEMP_X      12
@@ -90,19 +164,28 @@ typedef struct
 
 #define LIGHT_X     12
 #define LIGHT_Y     168
-#define LIGHT_W     456
+#define LIGHT_W     220
 #define LIGHT_H     140
+
+#define CAM_X       248
+#define CAM_Y       168
+#define CAM_W       220
+#define CAM_H       140
 
 #define UI_PANEL_BG     0x1082   /* dark gray-blue */
 #define UI_SEG_OFF      0x2945   /* dim segment color */
 
-static const Button_t BTN_TEMP_UP   = { TEMP_X + 170, TEMP_Y + 18, 34, 40 };
-static const Button_t BTN_TEMP_DOWN = { TEMP_X + 170, TEMP_Y + 82, 34, 40 };
+static const Button_t BTN_TEMP_UP    = { TEMP_X + 170, TEMP_Y + 18,  34, 40 };
+static const Button_t BTN_TEMP_DOWN  = { TEMP_X + 170, TEMP_Y + 82,  34, 40 };
+static const Button_t BTN_TEMP_MODE  = { TEMP_X + 16,  TEMP_Y + 106, 140, 24 };
 
-static const Button_t BTN_HUM_UP    = { HUM_X + 170, HUM_Y + 18, 34, 40 };
-static const Button_t BTN_HUM_DOWN  = { HUM_X + 170, HUM_Y + 82, 34, 40 };
+static const Button_t BTN_HUM_UP     = { HUM_X  + 170, HUM_Y  + 18,  34, 40 };
+static const Button_t BTN_HUM_DOWN   = { HUM_X  + 170, HUM_Y  + 82,  34, 40 };
+static const Button_t BTN_HUM_MODE   = { HUM_X  + 16,  HUM_Y  + 106, 140, 24 };
 
-static const Button_t BTN_LIGHT     = { LIGHT_X + 300, LIGHT_Y + 38, 120, 60 };
+static const Button_t BTN_LIGHT      = { LIGHT_X + 52,  LIGHT_Y + 92, 116, 32 };
+static const Button_t BTN_CAMERA     = { CAM_X   + 52,  CAM_Y   + 18, 116, 54 };
+static const Button_t BTN_BASKING    = { CAM_X   + 26,  CAM_Y   + 92, 168, 28 };
 
 /* ---------- Basic helpers ---------- */
 static uint8_t Button_Contains(const Button_t *btn, uint16_t px, uint16_t py)
@@ -223,31 +306,13 @@ static void UI_DrawPercentIcon(int x, int y, uint16_t color)
 static void UI_DrawToggleButton(const Button_t *btn, uint8_t on)
 {
     uint16_t trackColor = on ? ST7796_GREEN : ST7796_RED;
-    int knobX = on ? (btn->x + btn->w - 28) : (btn->x + 28);
+    int r = (btn->h / 2) - 4;
     int knobY = btn->y + btn->h / 2;
+    int knobX = on ? (btn->x + btn->w - r - 4) : (btn->x + r + 4);
 
     ST7796_FillRect(btn->x, btn->y, btn->w, btn->h, trackColor);
     UI_DrawRectOutline(btn->x, btn->y, btn->w, btn->h, ST7796_WHITE);
-    UI_FillCircle(knobX, knobY, 18, ST7796_WHITE);
-}
-
-static void UI_DrawLightIndicator(uint8_t on)
-{
-    uint16_t lampColor = on ? ST7796_YELLOW : ST7796_GRAY;
-    int cx = LIGHT_X + 85;
-    int cy = LIGHT_Y + 70;
-
-    UI_FillCircle(cx, cy, 26, lampColor);
-    UI_DrawRectOutline(LIGHT_X + 35, LIGHT_Y + 25, 100, 90, ST7796_WHITE);
-
-    if (on)
-    {
-        UI_DrawLine(cx - 34, cy, cx - 48, cy, ST7796_YELLOW);
-        UI_DrawLine(cx + 34, cy, cx + 48, cy, ST7796_YELLOW);
-        UI_DrawLine(cx, cy - 34, cx, cy - 48, ST7796_YELLOW);
-        UI_DrawLine(cx - 24, cy - 24, cx - 36, cy - 36, ST7796_YELLOW);
-        UI_DrawLine(cx + 24, cy - 24, cx + 36, cy - 36, ST7796_YELLOW);
-    }
+    UI_FillCircle(knobX, knobY, r, ST7796_WHITE);
 }
 
 /* ---------- 7-segment digits ---------- */
@@ -306,29 +371,47 @@ static void UI_Draw2DigitValue(int x, int y, int value, uint16_t onColor)
     UI_DrawDigit(x + 38, y, ones, onColor, UI_SEG_OFF, 3);
 }
 
+static void UI_DrawModeButton(const Button_t *btn, uint8_t showCurrent)
+{
+    uint16_t bg  = showCurrent ? 0x03EF : 0x8C51; /* teal = current, amber = desired */
+    const char *label = showCurrent ? "CURRENT" : "DESIRED";
+
+    ST7796_FillRect(btn->x, btn->y, btn->w, btn->h, bg);
+    UI_DrawRectOutline(btn->x, btn->y, btn->w, btn->h, ST7796_WHITE);
+
+    uint8_t  len   = 0;
+    const char *p  = label;
+    while (*p++) len++;
+    uint16_t tx = btn->x + (btn->w - len * 6) / 2;
+    uint16_t ty = btn->y + (btn->h - 7) / 2;
+    ST7796_DrawString(tx, ty, label, ST7796_WHITE, bg, 1);
+}
+
 /* ---------- Panels ---------- */
-static void UI_DrawTempPanel(int temperature)
+static void UI_DrawTempPanel(int displayValue, uint8_t showCurrent)
 {
     ST7796_FillRect(TEMP_X, TEMP_Y, TEMP_W, TEMP_H, UI_PANEL_BG);
     UI_DrawRectOutline(TEMP_X, TEMP_Y, TEMP_W, TEMP_H, ST7796_ORANGE);
 
-    UI_Draw2DigitValue(TEMP_X + 20, TEMP_Y + 38, temperature, ST7796_WHITE);
-    UI_DrawDegreeIcon(TEMP_X + 116, TEMP_Y + 48, ST7796_ORANGE);
+    UI_Draw2DigitValue(TEMP_X + 20, TEMP_Y + 30, displayValue, ST7796_WHITE);
+    UI_DrawDegreeIcon(TEMP_X + 116, TEMP_Y + 40, ST7796_ORANGE);
 
-    UI_DrawArrowButton(&BTN_TEMP_UP, 1);
+    UI_DrawArrowButton(&BTN_TEMP_UP,   1);
     UI_DrawArrowButton(&BTN_TEMP_DOWN, 0);
+    UI_DrawModeButton(&BTN_TEMP_MODE, showCurrent);
 }
 
-static void UI_DrawHumPanel(int humidity)
+static void UI_DrawHumPanel(int displayValue, uint8_t showCurrent)
 {
     ST7796_FillRect(HUM_X, HUM_Y, HUM_W, HUM_H, UI_PANEL_BG);
     UI_DrawRectOutline(HUM_X, HUM_Y, HUM_W, HUM_H, ST7796_CYAN);
 
-    UI_Draw2DigitValue(HUM_X + 20, HUM_Y + 38, humidity, ST7796_WHITE);
-    UI_DrawPercentIcon(HUM_X + 116, HUM_Y + 46, ST7796_CYAN);
+    UI_Draw2DigitValue(HUM_X + 20, HUM_Y + 30, displayValue, ST7796_WHITE);
+    UI_DrawPercentIcon(HUM_X + 116, HUM_Y + 38, ST7796_CYAN);
 
-    UI_DrawArrowButton(&BTN_HUM_UP, 1);
+    UI_DrawArrowButton(&BTN_HUM_UP,   1);
     UI_DrawArrowButton(&BTN_HUM_DOWN, 0);
+    UI_DrawModeButton(&BTN_HUM_MODE, showCurrent);
 }
 
 static void UI_DrawLightPanel(uint8_t lightOn)
@@ -336,16 +419,257 @@ static void UI_DrawLightPanel(uint8_t lightOn)
     ST7796_FillRect(LIGHT_X, LIGHT_Y, LIGHT_W, LIGHT_H, UI_PANEL_BG);
     UI_DrawRectOutline(LIGHT_X, LIGHT_Y, LIGHT_W, LIGHT_H, ST7796_YELLOW);
 
-    UI_DrawLightIndicator(lightOn);
+    UI_DrawLightIndicatorSmall(LIGHT_X, LIGHT_Y, lightOn);
     UI_DrawToggleButton(&BTN_LIGHT, lightOn);
 }
 
-static void UI_DrawAll(int temperature, int humidity, uint8_t lightOn)
+static void UI_DrawCameraPanel(uint8_t baskingOccupied, uint8_t cameraPressed)
+{
+    ST7796_FillRect(CAM_X, CAM_Y, CAM_W, CAM_H, UI_PANEL_BG);
+    UI_DrawRectOutline(CAM_X, CAM_Y, CAM_W, CAM_H, ST7796_MAGENTA);
+
+    UI_DrawCameraButton(&BTN_CAMERA, cameraPressed);
+    UI_DrawBaskingStatus(baskingOccupied);
+}
+
+static void UI_DrawAll(int screenTemp, int humidity, uint8_t lightOn, uint8_t baskingOccupied)
 {
     ST7796_FillScreen(ST7796_BLACK);
-    UI_DrawTempPanel(temperature);
-    UI_DrawHumPanel(humidity);
+    UI_DrawTempPanel(screenTemp, 0);
+    UI_DrawHumPanel(humidity, 0);
     UI_DrawLightPanel(lightOn);
+    UI_DrawCameraPanel(baskingOccupied, 0);
+}
+
+static void UI_DrawLightIndicatorSmall(uint16_t panelX, uint16_t panelY, uint8_t on)
+{
+    uint16_t lampColor = on ? ST7796_YELLOW : ST7796_GRAY;
+
+    int boxW = 80;
+    int boxH = 60;
+    int boxX = panelX + (LIGHT_W - boxW) / 2;
+    int boxY = panelY + 18;
+
+    int cx = boxX + boxW / 2;
+    int cy = boxY + boxH / 2;
+
+    UI_FillCircle(cx, cy, 18, lampColor);
+    UI_DrawRectOutline(boxX, boxY, boxW, boxH, ST7796_WHITE);
+
+    if (on)
+    {
+        UI_DrawLine(cx - 24, cy,      cx - 34, cy,      ST7796_YELLOW);
+        UI_DrawLine(cx + 24, cy,      cx + 34, cy,      ST7796_YELLOW);
+        UI_DrawLine(cx,      cy - 24, cx,      cy - 34, ST7796_YELLOW);
+        UI_DrawLine(cx - 17, cy - 17, cx - 25, cy - 25, ST7796_YELLOW);
+        UI_DrawLine(cx + 17, cy - 17, cx + 25, cy - 25, ST7796_YELLOW);
+    }
+}
+
+static void UI_DrawCameraButton(const Button_t *btn, uint8_t pressed)
+{
+    uint16_t bg = pressed ? ST7796_CYAN : 0x4208;
+    int bx = btn->x;
+    int by = btn->y;
+
+    ST7796_FillRect(btn->x, btn->y, btn->w, btn->h, bg);
+    UI_DrawRectOutline(btn->x, btn->y, btn->w, btn->h, ST7796_WHITE);
+
+    /* camera body */
+    ST7796_FillRect(bx + 28, by + 18, 58, 22, ST7796_BLACK);
+    UI_DrawRectOutline(bx + 28, by + 18, 58, 22, ST7796_WHITE);
+
+    /* top bump */
+    ST7796_FillRect(bx + 42, by + 12, 16, 6, ST7796_WHITE);
+
+    /* lens */
+    UI_FillCircle(bx + 57, by + 29, 8, ST7796_WHITE);
+    UI_FillCircle(bx + 57, by + 29, 4, ST7796_BLACK);
+}
+
+static void UI_DrawBaskingStatus(uint8_t occupied)
+{
+    uint16_t fill = occupied ? ST7796_GREEN : ST7796_RED;
+
+    ST7796_FillRect(BTN_BASKING.x, BTN_BASKING.y, BTN_BASKING.w, BTN_BASKING.h, fill);
+    UI_DrawRectOutline(BTN_BASKING.x, BTN_BASKING.y, BTN_BASKING.w, BTN_BASKING.h, ST7796_WHITE);
+
+    /* indicator dot on left */
+    UI_FillCircle(BTN_BASKING.x + 16, BTN_BASKING.y + BTN_BASKING.h / 2, 6, ST7796_WHITE);
+
+    /* simple basking platform icon on right */
+    ST7796_FillRect(BTN_BASKING.x + 122, BTN_BASKING.y + 16, 28, 4, 0xA145);  /* brown-ish */
+    ST7796_DrawVLine(BTN_BASKING.x + 136, BTN_BASKING.y + 6, 10, 0xA145);
+
+    if (occupied)
+    {
+        UI_FillCircle(BTN_BASKING.x + 136, BTN_BASKING.y + 10, 5, ST7796_YELLOW);
+    }
+    else
+    {
+        UI_FillCircle(BTN_BASKING.x + 136, BTN_BASKING.y + 10, 5, ST7796_GRAY);
+    }
+}
+
+
+/* ─── Camera capture + display ─────────────────────────────────────────── */
+static void UI_CaptureAndShow(void)
+{
+    /* ── 1. Clear screen and draw header ── */
+    ST7796_FillScreen(ST7796_BLACK);
+    ST7796_DrawString(10, 8, "TAP SCREEN OR PRESS BUTTON TO EXIT",
+                      ST7796_WHITE, ST7796_BLACK, 1);
+    ST7796_DrawHLine(0, 22, ST7796_WIDTH, ST7796_DARKGREY);
+
+    /* Show "capturing" message while we wait */
+    ST7796_DrawString(160, 160, "CAPTURING...", ST7796_YELLOW, ST7796_BLACK, 2);
+
+    /* ── 2. Set display window for the image ── */
+    /*
+     * Display is landscape 480x320.
+     * Image is QVGA 320x240.
+     * Centre it: x offset = (480-320)/2 = 80, y offset = 28 (below header)
+     */
+    uint16_t img_x = (ST7796_WIDTH  - 320U) / 2U;  /* 80 */
+    uint16_t img_y = 28U;
+
+    /* Open the address window on the ST7796 — sends CASET, RASET, RAMWR */
+
+    /* ── 3. Capture and stream directly to display ── */
+    uint8_t result = Arducam_CaptureDecodeDisplay();
+
+    if (result == ARDUCAM_ERR_TIMEOUT)
+    {
+        ST7796_FillScreen(ST7796_BLACK);
+        ST7796_DrawString(60, 150, "CAPTURE TIMEOUT", ST7796_RED,   ST7796_BLACK, 2);
+        ST7796_DrawString(60, 175, "TAP TO RETURN",   ST7796_WHITE, ST7796_BLACK, 1);
+    }
+    else if (result == ARDUCAM_ERR_DECODE || result == ARDUCAM_ERR_SIZE)
+    {
+        ST7796_FillScreen(ST7796_BLACK);
+        ST7796_DrawString(80, 150, "DECODE ERROR",  ST7796_RED,   ST7796_BLACK, 2);
+        ST7796_DrawString(60, 175, "TAP TO RETURN", ST7796_WHITE, ST7796_BLACK, 1);
+    }
+}
+
+
+/* ─── Wait for any input, then redraw the dashboard ────────────────────── */
+static void UI_WaitForExitThenDashboard(
+        int     screenTemp,
+        int     humidity,
+        uint8_t lightOn,
+        uint8_t baskingOccupied,
+        uint8_t tempShowCurrent,
+        uint8_t humShowCurrent)
+{
+    uint8_t exit_view = 0;
+
+    /* Drain any stale touch event from the capture tap */
+    HAL_Delay(300);
+
+    while (!exit_view)
+    {
+        /* Touch anywhere exits */
+        uint16_t tx, ty;
+        if (Touch_GetPoint(&tx, &ty))
+        {
+            exit_view = 1;
+        }
+
+        /* Any BT remote button exits (consume without acting on it) */
+        if (bt_rx_ready)
+        {
+            bt_rx_ready = 0;
+            exit_view   = 1;
+        }
+
+        HAL_Delay(15);
+    }
+
+    /* Repaint the full dashboard */
+    UI_DrawAll(screenTemp, humidity, lightOn, baskingOccupied);
+}
+
+typedef enum
+{
+    HUMIDIFIER_MODE_OFF = 0,
+    HUMIDIFIER_MODE_ALWAYS_ON,
+    HUMIDIFIER_MODE_CONT_PULSE
+} HumidifierMode_t;
+
+static HumidifierMode_t humidifier_mode = HUMIDIFIER_MODE_OFF;
+static uint32_t last_humidifier_burst_tick = 0;
+
+#define HUMIDIFIER_BUTTON_MS    50U
+#define HUMIDIFIER_MODE_GAP_MS  50U
+#define HUMIDIFIER_SPRAY_MS     25000U /* 25 second spray */
+#define HUMIDIFIER_SETTLE_MS    180000U   /* 3 minutes */
+#define HUMIDITY_HYSTERESIS_PCT 2.0f
+
+static void humidifier_button_press(void)
+{
+    /* Simulate one mode-button press */
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_RESET);
+    HAL_Delay(HUMIDIFIER_BUTTON_MS);
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_SET);
+    HAL_Delay(HUMIDIFIER_MODE_GAP_MS);
+}
+
+static void humidifier_advance_mode(void)
+{
+    humidifier_button_press();
+
+    if (humidifier_mode == HUMIDIFIER_MODE_OFF)
+    {
+        humidifier_mode = HUMIDIFIER_MODE_ALWAYS_ON;
+    }
+    else if (humidifier_mode == HUMIDIFIER_MODE_ALWAYS_ON)
+    {
+        humidifier_mode = HUMIDIFIER_MODE_CONT_PULSE;
+    }
+    else
+    {
+        humidifier_mode = HUMIDIFIER_MODE_OFF;
+    }
+}
+
+static void humidifier_set_mode(HumidifierMode_t target)
+{
+    while (humidifier_mode != target)
+    {
+        humidifier_advance_mode();
+    }
+}
+
+static void humidifier_spray_burst(void)
+{
+    /* OFF -> ALWAYS ON */
+    humidifier_set_mode(HUMIDIFIER_MODE_ALWAYS_ON);
+
+    /* stay in ALWAYS ON briefly to produce one mist burst */
+    HAL_Delay(HUMIDIFIER_SPRAY_MS);
+
+    /* ALWAYS ON -> CONT_PULSE -> OFF */
+    humidifier_set_mode(HUMIDIFIER_MODE_OFF);
+
+    last_humidifier_burst_tick = HAL_GetTick();
+}
+
+static void humidifier_update(uint32_t now_ms, float current_humidity, int desired_humidity)
+{
+    /* Do nothing if we are already at/above target (with a little hysteresis) */
+    if (current_humidity >= ((float)desired_humidity - HUMIDITY_HYSTERESIS_PCT))
+    {
+        return;
+    }
+
+    /* Wait after each burst so humidity has time to spread through the tank */
+    if ((now_ms - last_humidifier_burst_tick) < HUMIDIFIER_SETTLE_MS)
+    {
+        return;
+    }
+
+    humidifier_spray_burst();
 }
 /* USER CODE END 0 */
 
@@ -380,67 +704,205 @@ int main(void)
   MX_GPIO_Init();
   MX_SPI1_Init();
   MX_SPI2_Init();
+  MX_I2C2_Init();
+  MX_SPI3_Init();
+  MX_USART2_UART_Init();
+  MX_I2C3_Init();
   /* USER CODE BEGIN 2 */
-  int temperature = 72;
-  int humidity = 45;
-  uint8_t lightOn = 0;
-  uint8_t touchLatched = 0;
+   HAL_UART_Receive_IT(&huart2, (uint8_t *)&bt_rx_byte, 1);
+   int screenTemp = 85;
+   int humidity = 30;
+   uint8_t lightOn = 0;
+   uint8_t baskingOccupied = 0;
+   uint8_t touchLatched = 0;
+   uint8_t tempShowCurrent = 0;   /* 0=desired, 1=current */
+   uint8_t humShowCurrent = 0;   /* 0=desired, 1=current */
 
-  ST7796_Init();
-  XPT2046_Init();
+   ST7796_Init();
+   XPT2046_Init();
+   AHT20_Init();
 
-  UI_DrawAll(temperature, humidity, lightOn);
-  LightLed_Set(lightOn);
+   HAL_GPIO_WritePin(GPIOG, GPIO_PIN_12, GPIO_PIN_SET);
+   HAL_Delay(10);
 
+   uint8_t cam_err = OV2640_JPEG_Init();
+   if (cam_err != ARDUCAM_OK)
+   {
+       /* SPI to ArduCAM chip not working — show error and halt */
+       ST7796_FillScreen(ST7796_BLACK);
+       ST7796_DrawString(60, 140, "CAM SPI FAILED", ST7796_RED, ST7796_BLACK, 2);
+       ST7796_DrawString(40, 165, "CHECK WIRING+NSSPMode", ST7796_WHITE, ST7796_BLACK, 1);
+       while (1) {}
+   }
 
+   UI_DrawAll(screenTemp, humidity, lightOn, baskingOccupied);
+   LightLed_Set(lightOn);
+   uint32_t last_sensor_tick = 0U;
+   const uint32_t SENSOR_INTERVAL_MS = 2000U;  /* read sensor every 2 seconds */
+
+   // PID tuners
+   float kp = 1.5, ki = 0.02, kd = 0.5;
+
+   HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_SET);   /* idle high */
+   humidifier_mode = HUMIDIFIER_MODE_OFF;
+
+   last_humidifier_burst_tick = HAL_GetTick() - HUMIDIFIER_SETTLE_MS;
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	    uint16_t x, y;
+	  uint16_t x, y;
+	  if (Touch_GetPoint(&x, &y))
+	  {
+	      if (!touchLatched)
+	      {
+	          touchLatched = 1;
 
-	    if (Touch_GetPoint(&x, &y))
-	    {
-	        if (!touchLatched)
-	        {
-	            touchLatched = 1;
+	          /* ── Temperature panel ── */
+	          if (Button_Contains(&BTN_TEMP_UP, x, y))
+	          {
+	              if (screenTemp <= 94) screenTemp += 5;
+	              UI_DrawTempPanel(tempShowCurrent ? (int)Temperature : screenTemp,
+	                               tempShowCurrent);
+	          }
+	          else if (Button_Contains(&BTN_TEMP_DOWN, x, y))
+	          {
+	              if (screenTemp >= 5) screenTemp -= 5;
+	              UI_DrawTempPanel(tempShowCurrent ? (int)Temperature : screenTemp,
+	                               tempShowCurrent);
+	          }
+	          else if (Button_Contains(&BTN_TEMP_MODE, x, y))
+	          {
+	              tempShowCurrent = !tempShowCurrent;
+	              UI_DrawTempPanel(tempShowCurrent ? (int)Temperature : screenTemp,
+	                               tempShowCurrent);
+	          }
 
-	            if (Button_Contains(&BTN_TEMP_UP, x, y))
-	            {
-	                if (temperature < 99) temperature++;
-	                UI_DrawTempPanel(temperature);
-	            }
-	            else if (Button_Contains(&BTN_TEMP_DOWN, x, y))
-	            {
-	                if (temperature > 0) temperature--;
-	                UI_DrawTempPanel(temperature);
-	            }
-	            else if (Button_Contains(&BTN_HUM_UP, x, y))
-	            {
-	                if (humidity < 99) humidity++;
-	                UI_DrawHumPanel(humidity);
-	            }
-	            else if (Button_Contains(&BTN_HUM_DOWN, x, y))
-	            {
-	                if (humidity > 0) humidity--;
-	                UI_DrawHumPanel(humidity);
-	            }
-	            else if (Button_Contains(&BTN_LIGHT, x, y))
-	            {
-	                lightOn = !lightOn;
-	                LightLed_Set(lightOn);     // real-world LED control
-	                UI_DrawLightPanel(lightOn);
-	            }
-	        }
-	    }
-	    else
-	    {
-	        touchLatched = 0;
-	    }
+	          /* ── Humidity panel ── */
+	          else if (Button_Contains(&BTN_HUM_UP, x, y))
+	          {
+	              if (humidity <= 94) humidity += 5;
+	              UI_DrawHumPanel(humShowCurrent ? (int)Humidity : humidity,
+	                              humShowCurrent);
+	          }
+	          else if (Button_Contains(&BTN_HUM_DOWN, x, y))
+	          {
+	              if (humidity >= 5) humidity -= 5;
+	              UI_DrawHumPanel(humShowCurrent ? (int)Humidity : humidity,
+	                              humShowCurrent);
+	          }
+	          else if (Button_Contains(&BTN_HUM_MODE, x, y))
+	          {
+	              humShowCurrent = !humShowCurrent;
+	              UI_DrawHumPanel(humShowCurrent ? (int)Humidity : humidity,
+	                              humShowCurrent);
+	          }
 
-	    HAL_Delay(15);
+	          /* ── Light panel ── */
+	          else if (Button_Contains(&BTN_LIGHT, x, y))
+	          {
+	              lightOn = !lightOn;
+	              LightLed_Set(lightOn);
+	              UI_DrawLightPanel(lightOn);
+	          }
+
+	          /* ── Camera panel ── */
+	          else if (Button_Contains(&BTN_CAMERA, x, y))
+	          {
+	              UI_DrawCameraPanel(baskingOccupied, 1);
+	              HAL_Delay(120);
+	              UI_CaptureAndShow();
+	              UI_WaitForExitThenDashboard(screenTemp, humidity, lightOn,
+	                                          baskingOccupied,
+	                                          tempShowCurrent, humShowCurrent);
+	          }
+	          else if (Button_Contains(&BTN_BASKING, x, y))
+	          {
+	              baskingOccupied = !baskingOccupied;
+	              UI_DrawCameraPanel(baskingOccupied, 0);
+	          }
+	      }
+	  }
+	  else
+	  {
+	      touchLatched = 0;
+	  }
+
+	  if (bt_rx_ready)
+	  {
+	      uint8_t cmd  = bt_rx_byte;   /* snapshot before ISR overwrites */
+	      bt_rx_ready  = 0;            /* clear */
+
+	      switch (cmd)
+	      {
+	          case BT_CMD_TEMP_UP:
+	              if (screenTemp <= 94) screenTemp += 5;
+	              UI_DrawTempPanel(tempShowCurrent ? (int)Temperature : screenTemp,
+	                               tempShowCurrent);
+	              break;
+
+	          case BT_CMD_TEMP_DOWN:
+	              if (screenTemp >= 5) screenTemp -= 5;
+	              UI_DrawTempPanel(tempShowCurrent ? (int)Temperature : screenTemp,
+	                               tempShowCurrent);
+	              break;
+
+	          case BT_CMD_HUM_UP:
+	              if (humidity <= 94) humidity += 5;
+	              UI_DrawHumPanel(humShowCurrent ? (int)Humidity : humidity,
+	                              humShowCurrent);
+	              break;
+
+	          case BT_CMD_HUM_DOWN:
+	              if (humidity >= 5) humidity -= 5;
+	              UI_DrawHumPanel(humShowCurrent ? (int)Humidity : humidity,
+	                              humShowCurrent);
+	              break;
+
+	          case BT_CMD_LIGHT:
+	              lightOn = !lightOn;
+	              LightLed_Set(lightOn);
+	              UI_DrawLightPanel(lightOn);
+	              break;
+
+	          case BT_CMD_CAMERA:
+	              UI_DrawCameraPanel(baskingOccupied, 1);
+	              HAL_Delay(120);
+	              UI_CaptureAndShow();
+	              UI_WaitForExitThenDashboard(screenTemp, humidity, lightOn,
+	                                          baskingOccupied,
+	                                          tempShowCurrent, humShowCurrent);
+	              break;
+
+	          default:
+	              break;
+	      }
+	  }
+
+	  uint32_t now = HAL_GetTick();
+	  if (now - last_sensor_tick >= SENSOR_INTERVAL_MS)
+	  {
+	      last_sensor_tick = now;
+
+	      AHT20_Measure();
+
+	      humidifier_update(now, Humidity, humidity);
+
+	      PIDloop(Temperature, screenTemp, kp, ki, kd, false);
+
+	      if (tempShowCurrent)
+	      {
+	          UI_Draw2DigitValue(TEMP_X + 20, TEMP_Y + 30, (int)Temperature, ST7796_WHITE);
+	      }
+	      if (humShowCurrent)
+	      {
+	          UI_Draw2DigitValue(HUM_X + 20, HUM_Y + 30, (int)Humidity, ST7796_WHITE);
+	      }
+	  }
+
+	  HAL_Delay(15);
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -459,7 +921,7 @@ void SystemClock_Config(void)
 
   /** Configure the main internal regulator output voltage
   */
-  if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1) != HAL_OK)
+  if (HAL_PWREx_ControlVoltageScaling(PWR_REGULATOR_VOLTAGE_SCALE1_BOOST) != HAL_OK)
   {
     Error_Handler();
   }
@@ -471,7 +933,13 @@ void SystemClock_Config(void)
   RCC_OscInitStruct.MSIState = RCC_MSI_ON;
   RCC_OscInitStruct.MSICalibrationValue = 0;
   RCC_OscInitStruct.MSIClockRange = RCC_MSIRANGE_6;
-  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_NONE;
+  RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
+  RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_MSI;
+  RCC_OscInitStruct.PLL.PLLM = 1;
+  RCC_OscInitStruct.PLL.PLLN = 60;
+  RCC_OscInitStruct.PLL.PLLP = RCC_PLLP_DIV2;
+  RCC_OscInitStruct.PLL.PLLQ = RCC_PLLQ_DIV2;
+  RCC_OscInitStruct.PLL.PLLR = RCC_PLLR_DIV2;
   if (HAL_RCC_OscConfig(&RCC_OscInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -481,15 +949,111 @@ void SystemClock_Config(void)
   */
   RCC_ClkInitStruct.ClockType = RCC_CLOCKTYPE_HCLK|RCC_CLOCKTYPE_SYSCLK
                               |RCC_CLOCKTYPE_PCLK1|RCC_CLOCKTYPE_PCLK2;
-  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_MSI;
+  RCC_ClkInitStruct.SYSCLKSource = RCC_SYSCLKSOURCE_PLLCLK;
   RCC_ClkInitStruct.AHBCLKDivider = RCC_SYSCLK_DIV1;
-  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV1;
+  RCC_ClkInitStruct.APB1CLKDivider = RCC_HCLK_DIV2;
   RCC_ClkInitStruct.APB2CLKDivider = RCC_HCLK_DIV1;
 
-  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_0) != HAL_OK)
+  if (HAL_RCC_ClockConfig(&RCC_ClkInitStruct, FLASH_LATENCY_5) != HAL_OK)
   {
     Error_Handler();
   }
+}
+
+/**
+  * @brief I2C2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C2_Init(void)
+{
+
+  /* USER CODE BEGIN I2C2_Init 0 */
+
+  /* USER CODE END I2C2_Init 0 */
+
+  /* USER CODE BEGIN I2C2_Init 1 */
+
+  /* USER CODE END I2C2_Init 1 */
+  hi2c2.Instance = I2C2;
+  hi2c2.Init.Timing = 0x10A077A8;
+  hi2c2.Init.OwnAddress1 = 0;
+  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c2.Init.OwnAddress2 = 0;
+  hi2c2.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c2, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c2, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C2_Init 2 */
+
+  /* USER CODE END I2C2_Init 2 */
+
+}
+
+/**
+  * @brief I2C3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_I2C3_Init(void)
+{
+
+  /* USER CODE BEGIN I2C3_Init 0 */
+
+  /* USER CODE END I2C3_Init 0 */
+
+  /* USER CODE BEGIN I2C3_Init 1 */
+
+  /* USER CODE END I2C3_Init 1 */
+  hi2c3.Instance = I2C3;
+  hi2c3.Init.Timing = 0x10A077A8;
+  hi2c3.Init.OwnAddress1 = 0;
+  hi2c3.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c3.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c3.Init.OwnAddress2 = 0;
+  hi2c3.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c3.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c3.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c3, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c3, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C3_Init 2 */
+
+  /* USER CODE END I2C3_Init 2 */
+
 }
 
 /**
@@ -573,6 +1137,94 @@ static void MX_SPI2_Init(void)
 }
 
 /**
+  * @brief SPI3 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI3_Init(void)
+{
+
+  /* USER CODE BEGIN SPI3_Init 0 */
+
+  /* USER CODE END SPI3_Init 0 */
+
+  /* USER CODE BEGIN SPI3_Init 1 */
+
+  /* USER CODE END SPI3_Init 1 */
+  /* SPI3 parameter configuration*/
+  hspi3.Instance = SPI3;
+  hspi3.Init.Mode = SPI_MODE_MASTER;
+  hspi3.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi3.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi3.Init.CLKPolarity = SPI_POLARITY_LOW;
+  hspi3.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi3.Init.NSS = SPI_NSS_SOFT;
+  hspi3.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_32;
+  hspi3.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi3.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi3.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi3.Init.CRCPolynomial = 7;
+  hspi3.Init.CRCLength = SPI_CRC_LENGTH_DATASIZE;
+  hspi3.Init.NSSPMode = SPI_NSS_PULSE_DISABLE;
+  if (HAL_SPI_Init(&hspi3) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI3_Init 2 */
+
+  /* USER CODE END SPI3_Init 2 */
+
+}
+
+/**
+  * @brief USART2 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_USART2_UART_Init(void)
+{
+
+  /* USER CODE BEGIN USART2_Init 0 */
+
+  /* USER CODE END USART2_Init 0 */
+
+  /* USER CODE BEGIN USART2_Init 1 */
+
+  /* USER CODE END USART2_Init 1 */
+  huart2.Instance = USART2;
+  huart2.Init.BaudRate = 115200;
+  huart2.Init.WordLength = UART_WORDLENGTH_8B;
+  huart2.Init.StopBits = UART_STOPBITS_1;
+  huart2.Init.Parity = UART_PARITY_NONE;
+  huart2.Init.Mode = UART_MODE_TX_RX;
+  huart2.Init.HwFlowCtl = UART_HWCONTROL_NONE;
+  huart2.Init.OverSampling = UART_OVERSAMPLING_16;
+  huart2.Init.OneBitSampling = UART_ONE_BIT_SAMPLE_DISABLE;
+  huart2.Init.ClockPrescaler = UART_PRESCALER_DIV1;
+  huart2.AdvancedInit.AdvFeatureInit = UART_ADVFEATURE_NO_INIT;
+  if (HAL_UART_Init(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetTxFifoThreshold(&huart2, UART_TXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_SetRxFifoThreshold(&huart2, UART_RXFIFO_THRESHOLD_1_8) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  if (HAL_UARTEx_DisableFifoMode(&huart2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN USART2_Init 2 */
+
+  /* USER CODE END USART2_Init 2 */
+
+}
+
+/**
   * @brief GPIO Initialization Function
   * @param None
   * @retval None
@@ -581,7 +1233,6 @@ static void MX_GPIO_Init(void)
 {
   GPIO_InitTypeDef GPIO_InitStruct = {0};
   /* USER CODE BEGIN MX_GPIO_Init_1 */
-
   /* USER CODE END MX_GPIO_Init_1 */
 
   /* GPIO Ports Clock Enable */
@@ -591,146 +1242,80 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
-  __HAL_RCC_GPIOD_CLK_ENABLE();
   __HAL_RCC_GPIOG_CLK_ENABLE();
   HAL_PWREx_EnableVddIO2();
+  __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_0|GPIO_PIN_3|GPIO_PIN_8, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_4|GPIO_PIN_5, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_12, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_SET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1|GPIO_PIN_4, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : PE2 PE3 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_3;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF13_SAI1;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2|GPIO_PIN_12|LD3_Pin|LD2_Pin
+                          |GPIO_PIN_8, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : PF0 PF1 PF2 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_1|GPIO_PIN_2;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF4_I2C2;
-  HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOG, GPIO_PIN_0|USB_PowerSwitchOn_Pin|GPIO_PIN_12, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : PF7 */
-  GPIO_InitStruct.Pin = GPIO_PIN_7;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF13_SAI1;
-  HAL_GPIO_Init(GPIOF, &GPIO_InitStruct);
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_7, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : PC0 PC3 PC8 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0|GPIO_PIN_3|GPIO_PIN_8;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PC1 PC4 PC5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_4|GPIO_PIN_5;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG_ADC_CONTROL;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PA0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF1_TIM2;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PA1 PA3 */
-  GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_3;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG_ADC_CONTROL;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PB0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PB1 */
-  GPIO_InitStruct.Pin = GPIO_PIN_1;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG_ADC_CONTROL;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PB2 PB6 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_6;
-  GPIO_InitStruct.Mode = GPIO_MODE_ANALOG;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PE7 PE8 PE9 PE10
-                           PE11 */
-  GPIO_InitStruct.Pin = GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10
-                          |GPIO_PIN_11;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF1_TIM1;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PE12 */
-  GPIO_InitStruct.Pin = GPIO_PIN_12;
+  /*Configure GPIO pins : PE4 PE5 */
+  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PB10 */
-  GPIO_InitStruct.Pin = GPIO_PIN_10;
+  /*Configure GPIO pin : PE6 */
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : B1_Pin */
+  GPIO_InitStruct.Pin = B1_Pin;
+  GPIO_InitStruct.Mode = GPIO_MODE_IT_RISING;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(B1_GPIO_Port, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PA1 PA4 */
+  GPIO_InitStruct.Pin = GPIO_PIN_1|GPIO_PIN_4;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PB2 PB12 LD3_Pin LD2_Pin
+                           PB8 */
+  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_12|LD3_Pin|LD2_Pin
+                          |GPIO_PIN_8;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PG0 USB_PowerSwitchOn_Pin PG12 */
+  GPIO_InitStruct.Pin = GPIO_PIN_0|USB_PowerSwitchOn_Pin|GPIO_PIN_12;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : USB_OverCurrent_Pin */
+  GPIO_InitStruct.Pin = USB_OverCurrent_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  HAL_GPIO_Init(USB_OverCurrent_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PB12 */
-  GPIO_InitStruct.Pin = GPIO_PIN_12;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PB14 */
-  GPIO_InitStruct.Pin = GPIO_PIN_14;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF14_TIM15;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PD8 PD9 */
-  GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF7_USART3;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PD14 PD15 */
-  GPIO_InitStruct.Pin = GPIO_PIN_14|GPIO_PIN_15;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PG7 PG8 */
-  GPIO_InitStruct.Pin = GPIO_PIN_7|GPIO_PIN_8;
+  /*Configure GPIO pins : STLINK_TX_Pin STLINK_RX_Pin */
+  GPIO_InitStruct.Pin = STLINK_TX_Pin|STLINK_RX_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
@@ -739,89 +1324,36 @@ static void MX_GPIO_Init(void)
 
   /*Configure GPIO pin : PC6 */
   GPIO_InitStruct.Pin = GPIO_PIN_6;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF13_SAI2;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PC7 */
-  GPIO_InitStruct.Pin = GPIO_PIN_7;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF2_TIM3;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PC9 PC10 PC11 PC12 */
-  GPIO_InitStruct.Pin = GPIO_PIN_9|GPIO_PIN_10|GPIO_PIN_11|GPIO_PIN_12;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF12_SDMMC1;
-  HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PA8 PA10 */
-  GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_10;
+  /*Configure GPIO pins : USB_SOF_Pin USB_ID_Pin USB_DM_Pin USB_DP_Pin */
+  GPIO_InitStruct.Pin = USB_SOF_Pin|USB_ID_Pin|USB_DM_Pin|USB_DP_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
   GPIO_InitStruct.Alternate = GPIO_AF10_OTG_FS;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PA9 */
-  GPIO_InitStruct.Pin = GPIO_PIN_9;
+  /*Configure GPIO pin : USB_VBUS_Pin */
+  GPIO_InitStruct.Pin = USB_VBUS_Pin;
   GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
+  HAL_GPIO_Init(USB_VBUS_GPIO_Port, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PD0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF9_CAN1;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PD2 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF12_SDMMC1;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PD3 PD4 PD5 PD6 */
-  GPIO_InitStruct.Pin = GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5|GPIO_PIN_6;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF7_USART2;
-  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PB3 PB4 PB5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_3|GPIO_PIN_4|GPIO_PIN_5;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF6_SPI3;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PB8 PB9 */
-  GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_OD;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_VERY_HIGH;
-  GPIO_InitStruct.Alternate = GPIO_AF4_I2C1;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
-  /*Configure GPIO pin : PE0 */
-  GPIO_InitStruct.Pin = GPIO_PIN_0;
-  GPIO_InitStruct.Mode = GPIO_MODE_AF_PP;
+  /*Configure GPIO pin : PD7 */
+  GPIO_InitStruct.Pin = GPIO_PIN_7;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  GPIO_InitStruct.Alternate = GPIO_AF2_TIM4;
-  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB6 */
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
@@ -829,7 +1361,17 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    if (huart->Instance == USART2)
+    {
+        /* Set the ready flag */
+        bt_rx_ready = 1;
 
+        /* Re-arm immediately so we don't miss next byte */
+        HAL_UART_Receive_IT(&huart2, (uint8_t *)&bt_rx_byte, 1);
+    }
+}
 /* USER CODE END 4 */
 
 /**
