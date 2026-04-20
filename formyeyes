@@ -1,113 +1,168 @@
-typedef enum
+#define HX711_DOUT_PORT         GPIOC
+#define HX711_DOUT_PIN          GPIO_PIN_0
+#define HX711_SCK_PORT          GPIOC
+#define HX711_SCK_PIN           GPIO_PIN_1
+
+#define HX711_OCCUPIED_ON_G     300.0f
+#define HX711_OCCUPIED_OFF_G    250.0f
+#define HX711_SAMPLE_INTERVAL_MS 200U
+
+static int32_t hx711_tare_offset = -1037250;
+static float   hx711_scale_factor = 1543.78f;
+static uint32_t last_hx711_tick = 0U;
+
+static int32_t HX711_ReadRaw(void)
 {
-    HUMIDIFIER_MODE_OFF = 0,
-    HUMIDIFIER_MODE_ALWAYS_ON,
-    HUMIDIFIER_MODE_CONT_PULSE
-} HumidifierMode_t;
+    int32_t buffer = 0;
+    uint32_t timeout = 0;
 
-static HumidifierMode_t humidifier_mode = HUMIDIFIER_MODE_OFF;
-static uint32_t last_humidifier_burst_tick = 0;
+    /* Wait for DATA to go low (ready) */
+    while (HAL_GPIO_ReadPin(HX711_DOUT_PORT, HX711_DOUT_PIN) == GPIO_PIN_SET)
+    {
+        timeout++;
+        if (timeout > 1000000U)
+        {
+            return INT32_MIN;   /* timeout / no sensor ready */
+        }
+    }
 
-#define HUMIDIFIER_BUTTON_MS    50U
-#define HUMIDIFIER_MODE_GAP_MS  50U
-#define HUMIDIFIER_SPRAY_MS     50U
-#define HUMIDIFIER_SETTLE_MS    180000U   /* 3 minutes */
-#define HUMIDITY_HYSTERESIS_PCT 1.0f
+    /* Read 24 bits */
+    for (int i = 0; i < 24; i++)
+    {
+        HAL_GPIO_WritePin(HX711_SCK_PORT, HX711_SCK_PIN, GPIO_PIN_SET);
+        __NOP(); __NOP();
 
-static void humidifier_button_press(void)
-{
-    /* Simulate one mode-button press */
-    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_RESET);
-    HAL_Delay(HUMIDIFIER_BUTTON_MS);
-    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_SET);
-    HAL_Delay(HUMIDIFIER_MODE_GAP_MS);
+        buffer <<= 1;
+        if (HAL_GPIO_ReadPin(HX711_DOUT_PORT, HX711_DOUT_PIN) == GPIO_PIN_SET)
+        {
+            buffer++;
+        }
+
+        HAL_GPIO_WritePin(HX711_SCK_PORT, HX711_SCK_PIN, GPIO_PIN_RESET);
+        __NOP(); __NOP();
+    }
+
+    /* 25th pulse = Channel A, Gain 128 */
+    HAL_GPIO_WritePin(HX711_SCK_PORT, HX711_SCK_PIN, GPIO_PIN_SET);
+    __NOP(); __NOP(); __NOP();
+    HAL_GPIO_WritePin(HX711_SCK_PORT, HX711_SCK_PIN, GPIO_PIN_RESET);
+
+    /* Sign extend 24-bit value */
+    if (buffer & 0x800000)
+    {
+        buffer |= ~0xFFFFFF;
+    }
+
+    return buffer;
 }
 
-static void humidifier_advance_mode(void)
+static void HX711_Tare(uint8_t samples)
 {
-    humidifier_button_press();
+    int64_t sum = 0;
+    uint8_t good = 0;
 
-    if (humidifier_mode == HUMIDIFIER_MODE_OFF)
+    HAL_Delay(100);
+
+    for (uint8_t i = 0; i < samples; i++)
     {
-        humidifier_mode = HUMIDIFIER_MODE_ALWAYS_ON;
+        int32_t raw = HX711_ReadRaw();
+        if (raw != INT32_MIN)
+        {
+            sum += raw;
+            good++;
+        }
+        HAL_Delay(20);
     }
-    else if (humidifier_mode == HUMIDIFIER_MODE_ALWAYS_ON)
+
+    if (good > 0)
     {
-        humidifier_mode = HUMIDIFIER_MODE_CONT_PULSE;
+        hx711_tare_offset = (int32_t)(sum / good);
+    }
+}
+
+static float HX711_ReadGrams(void)
+{
+    int64_t sum = 0;
+    uint8_t good = 0;
+
+    /* average a few readings to reduce jitter */
+    for (uint8_t i = 0; i < 5; i++)
+    {
+        int32_t raw = HX711_ReadRaw();
+        if (raw != INT32_MIN)
+        {
+            sum += raw;
+            good++;
+        }
+        HAL_Delay(2);
+    }
+
+    if (good == 0)
+    {
+        return -1.0f;   /* invalid */
+    }
+
+    int32_t avg_raw = (int32_t)(sum / good);
+    float grams = (float)(hx711_tare_offset - avg_raw) / hx711_scale_factor;
+    grams = fabsf(grams);
+
+    if (grams < 2.0f)
+    {
+        grams = 0.0f;
+    }
+
+    return grams;
+}
+
+static uint8_t HX711_GetOccupiedState(uint8_t current_state)
+{
+    float grams = HX711_ReadGrams();
+
+    if (grams < 0.0f)
+    {
+        return current_state;   /* if read failed, keep old state */
+    }
+
+    if (current_state)
+    {
+        /* once occupied, stay occupied until it drops below lower threshold */
+        return (grams > HX711_OCCUPIED_OFF_G) ? 1U : 0U;
     }
     else
     {
-        humidifier_mode = HUMIDIFIER_MODE_OFF;
+        /* once unoccupied, turn occupied only when we exceed upper threshold */
+        return (grams >= HX711_OCCUPIED_ON_G) ? 1U : 0U;
     }
 }
 
-static void humidifier_set_mode(HumidifierMode_t target)
+
+
+
+
+
+HX711_Tare(10);
+last_hx711_tick = HAL_GetTick();
+
+
+
+
+
+if (now - last_hx711_tick >= HX711_SAMPLE_INTERVAL_MS)
 {
-    while (humidifier_mode != target)
+    last_hx711_tick = now;
+
+    uint8_t new_basking = HX711_GetOccupiedState(baskingOccupied);
+    if (new_basking != baskingOccupied)
     {
-        humidifier_advance_mode();
+        baskingOccupied = new_basking;
+        UI_DrawCameraPanel(baskingOccupied, 0);
     }
-}
-
-static void humidifier_spray_burst(void)
-{
-    /* OFF -> ALWAYS ON */
-    humidifier_set_mode(HUMIDIFIER_MODE_ALWAYS_ON);
-
-    /* stay in ALWAYS ON briefly to produce one mist burst */
-    HAL_Delay(HUMIDIFIER_SPRAY_MS);
-
-    /* ALWAYS ON -> CONT_PULSE -> OFF */
-    humidifier_set_mode(HUMIDIFIER_MODE_OFF);
-
-    last_humidifier_burst_tick = HAL_GetTick();
-}
-
-static void humidifier_update(uint32_t now_ms, float current_humidity, int desired_humidity)
-{
-    /* Do nothing if we are already at/above target (with a little hysteresis) */
-    if (current_humidity >= ((float)desired_humidity - HUMIDITY_HYSTERESIS_PCT))
-    {
-        return;
-    }
-
-    /* Wait after each burst so humidity has time to spread through the tank */
-    if ((now_ms - last_humidifier_burst_tick) < HUMIDIFIER_SETTLE_MS)
-    {
-        return;
-    }
-
-    humidifier_spray_burst();
 }
 
 
 
-
-HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_SET);   /* idle high */
-humidifier_mode = HUMIDIFIER_MODE_OFF;
-
-/* allow an immediate first spray if startup humidity is low */
-last_humidifier_burst_tick = HAL_GetTick() - HUMIDIFIER_SETTLE_MS;
-
-
-
-
-if (now - last_sensor_tick >= SENSOR_INTERVAL_MS)
+else if (Button_Contains(&BTN_BASKING, x, y))
 {
-    last_sensor_tick = now;
-
-    AHT20_Measure();
-
-    humidifier_update(now, Humidity, humidity);
-
-    PIDloop(Temperature, screenTemp, kp, ki, kd, false);
-
-    if (tempShowCurrent)
-    {
-        UI_Draw2DigitValue(TEMP_X + 20, TEMP_Y + 30, (int)Temperature, ST7796_WHITE);
-    }
-    if (humShowCurrent)
-    {
-        UI_Draw2DigitValue(HUM_X + 20, HUM_Y + 30, (int)Humidity, ST7796_WHITE);
-    }
+    baskingOccupied = !baskingOccupied;
+    UI_DrawCameraPanel(baskingOccupied, 0);
 }
