@@ -131,8 +131,8 @@ Temperature = (Temperature_C * 1.8f) + 32.0f;
 
 
 
-#define LED_PORT GPIOG
-#define LED_PIN  GPIO_PIN_0
+#define LED_PORT GPIOE
+#define LED_PIN  GPIO_PIN_2
 
 typedef struct
 {
@@ -617,8 +617,8 @@ static uint32_t humidifier_state_tick = 0;
 
 #define HUMIDIFIER_BUTTON_MS    50U
 #define HUMIDIFIER_MODE_GAP_MS  50U
-#define HUMIDIFIER_SPRAY_MS     25000U    /* 25 seconds */
-#define HUMIDIFIER_SETTLE_MS    180000U   /* 3 minutes */
+#define HUMIDIFIER_SPRAY_MS     5000U    /* 25 seconds */
+#define HUMIDIFIER_SETTLE_MS    10000U   /* 3 minutes */
 #define HUMIDITY_HYSTERESIS_PCT 2.0f
 
 static void humidifier_line_idle(void)
@@ -725,10 +725,10 @@ static void humidifier_update(uint32_t now_ms, float current_humidity, int desir
             break;
     }
 }
-#define HX711_DOUT_PORT         GPIOB
-#define HX711_DOUT_PIN          GPIO_PIN_6
-#define HX711_SCK_PORT          GPIOB
-#define HX711_SCK_PIN           GPIO_PIN_2
+#define HX711_DOUT_PORT         GPIOD
+#define HX711_DOUT_PIN          GPIO_PIN_2
+#define HX711_SCK_PORT          GPIOH
+#define HX711_SCK_PIN           GPIO_PIN_3
 
 #define HX711_OCCUPIED_ON_G     300.0f
 #define HX711_OCCUPIED_OFF_G    250.0f
@@ -902,7 +902,7 @@ int main(void)
   /* USER CODE BEGIN 2 */
    HAL_UART_Receive_IT(&huart2, (uint8_t *)&bt_rx_byte, 1);
    int screenTemp = 85;
-   int humidity = 30;
+   int humidity = 0;
    uint8_t lightOn = 0;
    uint8_t baskingOccupied = 0;
    uint8_t touchLatched = 0;
@@ -1442,13 +1442,13 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOB_CLK_ENABLE();
   __HAL_RCC_GPIOG_CLK_ENABLE();
+  __HAL_RCC_GPIOB_CLK_ENABLE();
   HAL_PWREx_EnableVddIO2();
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_4|GPIO_PIN_5, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_2|GPIO_PIN_4|GPIO_PIN_5, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_SET);
@@ -1457,17 +1457,19 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1|GPIO_PIN_4, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2|GPIO_PIN_12|LD3_Pin|LD2_Pin
-                          |GPIO_PIN_8, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOG, GPIO_PIN_0|USB_PowerSwitchOn_Pin|GPIO_PIN_12, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOG, GPIO_PIN_0|USB_PowerSwitchOn_Pin|GPIO_PIN_12, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12|LD3_Pin|LD2_Pin|GPIO_PIN_8, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, GPIO_PIN_7, GPIO_PIN_RESET);
 
-  /*Configure GPIO pins : PE4 PE5 */
-  GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5;
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOH, GPIO_PIN_3, GPIO_PIN_RESET);
+
+  /*Configure GPIO pins : PE2 PE4 PE5 */
+  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_4|GPIO_PIN_5;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
@@ -1493,21 +1495,19 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
-  /*Configure GPIO pins : PB2 PB12 LD3_Pin LD2_Pin
-                           PB8 */
-  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_12|LD3_Pin|LD2_Pin
-                          |GPIO_PIN_8;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
-
   /*Configure GPIO pins : PG0 USB_PowerSwitchOn_Pin PG12 */
   GPIO_InitStruct.Pin = GPIO_PIN_0|USB_PowerSwitchOn_Pin|GPIO_PIN_12;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PB12 LD3_Pin LD2_Pin PB8 */
+  GPIO_InitStruct.Pin = GPIO_PIN_12|LD3_Pin|LD2_Pin|GPIO_PIN_8;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pin : USB_OverCurrent_Pin */
   GPIO_InitStruct.Pin = USB_OverCurrent_Pin;
@@ -1543,6 +1543,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   HAL_GPIO_Init(USB_VBUS_GPIO_Port, &GPIO_InitStruct);
 
+  /*Configure GPIO pin : PD2 */
+  GPIO_InitStruct.Pin = GPIO_PIN_2;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
   /*Configure GPIO pin : PD7 */
   GPIO_InitStruct.Pin = GPIO_PIN_7;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
@@ -1550,11 +1556,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
 
-  /*Configure GPIO pin : PB6 */
-  GPIO_InitStruct.Pin = GPIO_PIN_6;
-  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  /*Configure GPIO pin : PH3 */
+  GPIO_InitStruct.Pin = GPIO_PIN_3;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOH, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
