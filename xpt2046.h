@@ -9,8 +9,8 @@
 #define XPT2046_CS_PORT       GPIOB
 #define XPT2046_CS_PIN        GPIO_PIN_12
 
-#define XPT2046_IRQ_PORT      GPIOB
-#define XPT2046_IRQ_PIN       GPIO_PIN_10
+#define XPT2046_IRQ_PORT      GPIOC
+#define XPT2046_IRQ_PIN       GPIO_PIN_6
 
 /* Touch SPI handle from CubeMX */
 extern SPI_HandleTypeDef hspi2;

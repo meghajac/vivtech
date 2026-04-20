@@ -5,14 +5,14 @@
 #include <stdint.h>
 
 /* LCD control pins */
-#define ST7796_CS_PORT      GPIOE
-#define ST7796_CS_PIN       GPIO_PIN_12
+#define ST7796_CS_PORT      GPIOA
+#define ST7796_CS_PIN       GPIO_PIN_4
 
-#define ST7796_RST_PORT     GPIOC
-#define ST7796_RST_PIN      GPIO_PIN_0
+#define ST7796_RST_PORT     GPIOA
+#define ST7796_RST_PIN      GPIO_PIN_1
 
-#define ST7796_DC_PORT      GPIOC
-#define ST7796_DC_PIN       GPIO_PIN_3
+#define ST7796_DC_PORT      GPIOB
+#define ST7796_DC_PIN       GPIO_PIN_8
 
 /* Use SPI1 for LCD */
 extern SPI_HandleTypeDef hspi1;
@@ -28,6 +28,7 @@ extern SPI_HandleTypeDef hspi1;
 #define ST7796_WHITE        0xFFFF
 #define ST7796_ORANGE       0xFD20
 #define ST7796_GRAY         0x8410
+#define ST7796_DARKGREY     0x7bae
 
 extern uint16_t ST7796_WIDTH;
 extern uint16_t ST7796_HEIGHT;
@@ -39,5 +40,12 @@ void ST7796_FillScreen(uint16_t color);
 void ST7796_FillRect(uint16_t x, uint16_t y, uint16_t w, uint16_t h, uint16_t color);
 void ST7796_DrawHLine(uint16_t x, uint16_t y, uint16_t w, uint16_t color);
 void ST7796_DrawVLine(uint16_t x, uint16_t y, uint16_t h, uint16_t color);
+void ST7796_DrawChar(uint16_t x, uint16_t y, char ch,
+                     uint16_t fg, uint16_t bg, uint8_t scale);
+void ST7796_DrawString(uint16_t x, uint16_t y, const char *str,
+                       uint16_t fg, uint16_t bg, uint8_t scale);
+void ST7796_SetAddrWindow(uint16_t x0, uint16_t y0, uint16_t x1, uint16_t y1);
+void ST7796_CS_Low(void);
+void ST7796_CS_High(void);
 
 #endif
