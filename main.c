@@ -590,6 +590,224 @@ static void UI_WaitForExitThenDashboard(
     UI_DrawAll(screenTemp, humidity, lightOn, baskingOccupied);
 }
 
+typedef enum
+{
+    HUMIDIFIER_MODE_OFF = 0,
+    HUMIDIFIER_MODE_ALWAYS_ON,
+    HUMIDIFIER_MODE_CONT_PULSE
+} HumidifierMode_t;
+
+static HumidifierMode_t humidifier_mode = HUMIDIFIER_MODE_OFF;
+static uint32_t last_humidifier_burst_tick = 0;
+
+#define HUMIDIFIER_BUTTON_MS    50U
+#define HUMIDIFIER_MODE_GAP_MS  50U
+#define HUMIDIFIER_SPRAY_MS     25000U /* 25 second spray */
+#define HUMIDIFIER_SETTLE_MS    180000U   /* 3 minutes */
+#define HUMIDITY_HYSTERESIS_PCT 2.0f
+
+static void humidifier_button_press(void)
+{
+    /* Simulate one mode-button press */
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_RESET);
+    HAL_Delay(HUMIDIFIER_BUTTON_MS);
+    HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_SET);
+    HAL_Delay(HUMIDIFIER_MODE_GAP_MS);
+}
+
+static void humidifier_advance_mode(void)
+{
+    humidifier_button_press();
+
+    if (humidifier_mode == HUMIDIFIER_MODE_OFF)
+    {
+        humidifier_mode = HUMIDIFIER_MODE_ALWAYS_ON;
+    }
+    else if (humidifier_mode == HUMIDIFIER_MODE_ALWAYS_ON)
+    {
+        humidifier_mode = HUMIDIFIER_MODE_CONT_PULSE;
+    }
+    else
+    {
+        humidifier_mode = HUMIDIFIER_MODE_OFF;
+    }
+}
+
+static void humidifier_set_mode(HumidifierMode_t target)
+{
+    while (humidifier_mode != target)
+    {
+        humidifier_advance_mode();
+    }
+}
+
+static void humidifier_spray_burst(void)
+{
+    /* OFF -> ALWAYS ON */
+    humidifier_set_mode(HUMIDIFIER_MODE_ALWAYS_ON);
+
+    /* stay in ALWAYS ON briefly to produce one mist burst */
+    HAL_Delay(HUMIDIFIER_SPRAY_MS);
+
+    /* ALWAYS ON -> CONT_PULSE -> OFF */
+    humidifier_set_mode(HUMIDIFIER_MODE_OFF);
+
+    last_humidifier_burst_tick = HAL_GetTick();
+}
+
+static void humidifier_update(uint32_t now_ms, float current_humidity, int desired_humidity)
+{
+    /* Do nothing if we are already at/above target (with a little hysteresis) */
+    if (current_humidity >= ((float)desired_humidity - HUMIDITY_HYSTERESIS_PCT))
+    {
+        return;
+    }
+
+    /* Wait after each burst so humidity has time to spread through the tank */
+    if ((now_ms - last_humidifier_burst_tick) < HUMIDIFIER_SETTLE_MS)
+    {
+        return;
+    }
+
+    humidifier_spray_burst();
+}
+#define HX711_DOUT_PORT         GPIOC
+#define HX711_DOUT_PIN          GPIO_PIN_0
+#define HX711_SCK_PORT          GPIOC
+#define HX711_SCK_PIN           GPIO_PIN_1
+
+#define HX711_OCCUPIED_ON_G     300.0f
+#define HX711_OCCUPIED_OFF_G    250.0f
+#define HX711_SAMPLE_INTERVAL_MS 200U
+
+static int32_t hx711_tare_offset = -1037250;
+static float   hx711_scale_factor = 1543.78f;
+static uint32_t last_hx711_tick = 0U;
+
+static int32_t HX711_ReadRaw(void)
+{
+    int32_t buffer = 0;
+    uint32_t timeout = 0;
+
+    /* Wait for DATA to go low (ready) */
+    while (HAL_GPIO_ReadPin(HX711_DOUT_PORT, HX711_DOUT_PIN) == GPIO_PIN_SET)
+    {
+        timeout++;
+        if (timeout > 1000000U)
+        {
+            return INT32_MIN;   /* timeout / no sensor ready */
+        }
+    }
+
+    /* Read 24 bits */
+    for (int i = 0; i < 24; i++)
+    {
+        HAL_GPIO_WritePin(HX711_SCK_PORT, HX711_SCK_PIN, GPIO_PIN_SET);
+        __NOP(); __NOP();
+
+        buffer <<= 1;
+        if (HAL_GPIO_ReadPin(HX711_DOUT_PORT, HX711_DOUT_PIN) == GPIO_PIN_SET)
+        {
+            buffer++;
+        }
+
+        HAL_GPIO_WritePin(HX711_SCK_PORT, HX711_SCK_PIN, GPIO_PIN_RESET);
+        __NOP(); __NOP();
+    }
+
+    /* 25th pulse = Channel A, Gain 128 */
+    HAL_GPIO_WritePin(HX711_SCK_PORT, HX711_SCK_PIN, GPIO_PIN_SET);
+    __NOP(); __NOP(); __NOP();
+    HAL_GPIO_WritePin(HX711_SCK_PORT, HX711_SCK_PIN, GPIO_PIN_RESET);
+
+    /* Sign extend 24-bit value */
+    if (buffer & 0x800000)
+    {
+        buffer |= ~0xFFFFFF;
+    }
+
+    return buffer;
+}
+
+static void HX711_Tare(uint8_t samples)
+{
+    int64_t sum = 0;
+    uint8_t good = 0;
+
+    HAL_Delay(100);
+
+    for (uint8_t i = 0; i < samples; i++)
+    {
+        int32_t raw = HX711_ReadRaw();
+        if (raw != INT32_MIN)
+        {
+            sum += raw;
+            good++;
+        }
+        HAL_Delay(20);
+    }
+
+    if (good > 0)
+    {
+        hx711_tare_offset = (int32_t)(sum / good);
+    }
+}
+
+static float HX711_ReadGrams(void)
+{
+    int64_t sum = 0;
+    uint8_t good = 0;
+
+    /* average a few readings to reduce jitter */
+    for (uint8_t i = 0; i < 5; i++)
+    {
+        int32_t raw = HX711_ReadRaw();
+        if (raw != INT32_MIN)
+        {
+            sum += raw;
+            good++;
+        }
+        HAL_Delay(2);
+    }
+
+    if (good == 0)
+    {
+        return -1.0f;   /* invalid */
+    }
+
+    int32_t avg_raw = (int32_t)(sum / good);
+    float grams = (float)(hx711_tare_offset - avg_raw) / hx711_scale_factor;
+    grams = fabsf(grams);
+
+    if (grams < 2.0f)
+    {
+        grams = 0.0f;
+    }
+
+    return grams;
+}
+
+static uint8_t HX711_GetOccupiedState(uint8_t current_state)
+{
+    float grams = HX711_ReadGrams();
+
+    if (grams < 0.0f)
+    {
+        return current_state;   /* if read failed, keep old state */
+    }
+
+    if (current_state)
+    {
+        /* once occupied, stay occupied until it drops below lower threshold */
+        return (grams > HX711_OCCUPIED_OFF_G) ? 1U : 0U;
+    }
+    else
+    {
+        /* once unoccupied, turn occupied only when we exceed upper threshold */
+        return (grams >= HX711_OCCUPIED_ON_G) ? 1U : 0U;
+    }
+}
+
 /* USER CODE END 0 */
 
 /**
@@ -641,6 +859,9 @@ int main(void)
    XPT2046_Init();
    AHT20_Init();
 
+   HX711_Tare(10);
+   last_hx711_tick = HAL_GetTick();
+
    HAL_GPIO_WritePin(GPIOG, GPIO_PIN_12, GPIO_PIN_SET);
    HAL_Delay(10);
 
@@ -661,6 +882,11 @@ int main(void)
 
    // PID tuners
    float kp = 1.5, ki = 0.02, kd = 0.5;
+
+   HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_SET);   /* idle high */
+   humidifier_mode = HUMIDIFIER_MODE_OFF;
+
+   last_humidifier_burst_tick = HAL_GetTick() - HUMIDIFIER_SETTLE_MS;
   /* USER CODE END 2 */
 
   /* Infinite loop */
@@ -732,11 +958,7 @@ int main(void)
 	                                          baskingOccupied,
 	                                          tempShowCurrent, humShowCurrent);
 	          }
-	          else if (Button_Contains(&BTN_BASKING, x, y))
-	          {
-	              baskingOccupied = !baskingOccupied;
-	              UI_DrawCameraPanel(baskingOccupied, 0);
-	          }
+
 	      }
 	  }
 	  else
@@ -801,6 +1023,9 @@ int main(void)
 	      last_sensor_tick = now;
 
 	      AHT20_Measure();
+
+	      humidifier_update(now, Humidity, humidity);
+
 	      PIDloop(Temperature, screenTemp, kp, ki, kd, false);
 
 	      if (tempShowCurrent)
@@ -810,6 +1035,18 @@ int main(void)
 	      if (humShowCurrent)
 	      {
 	          UI_Draw2DigitValue(HUM_X + 20, HUM_Y + 30, (int)Humidity, ST7796_WHITE);
+	      }
+	  }
+
+	  if (now - last_hx711_tick >= HX711_SAMPLE_INTERVAL_MS)
+	  {
+	      last_hx711_tick = now;
+
+	      uint8_t new_basking = HX711_GetOccupiedState(baskingOccupied);
+	      if (new_basking != baskingOccupied)
+	      {
+	          baskingOccupied = new_basking;
+	          UI_DrawCameraPanel(baskingOccupied, 0);
 	      }
 	  }
 
@@ -1152,8 +1389,8 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
-  __HAL_RCC_GPIOG_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
+  __HAL_RCC_GPIOG_CLK_ENABLE();
   HAL_PWREx_EnableVddIO2();
   __HAL_RCC_GPIOD_CLK_ENABLE();
 
@@ -1161,13 +1398,17 @@ static void MX_GPIO_Init(void)
   HAL_GPIO_WritePin(GPIOE, GPIO_PIN_4|GPIO_PIN_5, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_6, GPIO_PIN_SET);
+
+  /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOA, GPIO_PIN_1|GPIO_PIN_4, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOG, GPIO_PIN_0|USB_PowerSwitchOn_Pin|GPIO_PIN_12, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_2|GPIO_PIN_12|LD3_Pin|LD2_Pin
+                          |GPIO_PIN_8, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOB, GPIO_PIN_12|LD3_Pin|LD2_Pin|GPIO_PIN_8, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOG, GPIO_PIN_0|USB_PowerSwitchOn_Pin|GPIO_PIN_12, GPIO_PIN_RESET);
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOD, GPIO_PIN_7, GPIO_PIN_RESET);
@@ -1175,6 +1416,13 @@ static void MX_GPIO_Init(void)
   /*Configure GPIO pins : PE4 PE5 */
   GPIO_InitStruct.Pin = GPIO_PIN_4|GPIO_PIN_5;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PE6 */
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_OD;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
@@ -1192,19 +1440,21 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOA, &GPIO_InitStruct);
 
+  /*Configure GPIO pins : PB2 PB12 LD3_Pin LD2_Pin
+                           PB8 */
+  GPIO_InitStruct.Pin = GPIO_PIN_2|GPIO_PIN_12|LD3_Pin|LD2_Pin
+                          |GPIO_PIN_8;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
   /*Configure GPIO pins : PG0 USB_PowerSwitchOn_Pin PG12 */
   GPIO_InitStruct.Pin = GPIO_PIN_0|USB_PowerSwitchOn_Pin|GPIO_PIN_12;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
-
-  /*Configure GPIO pins : PB12 LD3_Pin LD2_Pin PB8 */
-  GPIO_InitStruct.Pin = GPIO_PIN_12|LD3_Pin|LD2_Pin|GPIO_PIN_8;
-  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
-  GPIO_InitStruct.Pull = GPIO_NOPULL;
-  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /*Configure GPIO pin : USB_OverCurrent_Pin */
   GPIO_InitStruct.Pin = USB_OverCurrent_Pin;
@@ -1246,6 +1496,12 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB6 */
+  GPIO_InitStruct.Pin = GPIO_PIN_6;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
