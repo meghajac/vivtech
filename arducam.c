@@ -1,10 +1,3 @@
-/**
- * @file    arducam.c
- * @brief   ArduCAM OV2640 — JPEG capture + TJpgDec decode + ST7796 stream
- *          Directly based on teammate's working STM32 capture code.
- *          Adapted: hspi1→hspi3, hi2c1→hi2c2, GPIOD_14→GPIOG_12
- */
-
 #include "arducam.h"
 #include "st7796.h"
 #include "ov2640_regs.h"
@@ -27,7 +20,7 @@ typedef struct {
 } JpegCtx;
 
 /* ─────────────────────────────────────────────────────────────────────────────
- * SPI / I2C LOW-LEVEL  (mirrors teammate's exact functions)
+ * SPI / I2C LOW-LEVEL
  * ───────────────────────────────────────────────────────────────────────────── */
 void arducam_spi_write(uint8_t address, uint8_t value)
 {
@@ -66,19 +59,16 @@ void wrSensorRegs8_8(const struct sensor_reg reglist[])
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * JPEG SENSOR INIT
- * Exact mirror of teammate's OV2640_JPEG_Init — same register sequence,
- * same SPI test, just using hspi3/hi2c2 instead of hspi1/hi2c1
  * ───────────────────────────────────────────────────────────────────────────── */
 uint8_t OV2640_JPEG_Init(void)
 {
-    /* 1. Soft-reset ArduCAM chip (matches teammate's write_reg(0x07, 0x80)) */
+    /* 1. Soft-reset ArduCAM chip */
     arducam_spi_write(0x07, 0x80);
     HAL_Delay(100);
     arducam_spi_write(0x07, 0x00);
     HAL_Delay(100);
 
-    /* 2. SPI communication test — write 0x55 to TEST1, read it back.
-          If this fails, SPI is not working and we return early. */
+    /* 2. SPI communication test */
     arducam_spi_write(ARDUCHIP_TEST1, 0x55);
     uint8_t test_val = arducam_spi_read(ARDUCHIP_TEST1);
     if (test_val != 0x55) {
@@ -90,7 +80,7 @@ uint8_t OV2640_JPEG_Init(void)
     wrSensorReg8_8(0x12, 0x80);
     HAL_Delay(100);
 
-    /* 4. Same three-table sequence as teammate's OV2640_JPEG_Init */
+    /* 4.  three-table sequence */
     wrSensorRegs8_8(OV2640_JPEG_INIT);
     wrSensorRegs8_8(OV2640_YUV422);
     wrSensorRegs8_8(OV2640_JPEG);
@@ -162,15 +152,14 @@ static int _jpeg_out(JDEC *jd, void *bitmap, JRECT *rect)
 
 /* ─────────────────────────────────────────────────────────────────────────────
  * CAPTURE → DECODE → DISPLAY
- * Mirrors teammate's Capture_JPEG flow exactly, then decodes instead of printing
  * ───────────────────────────────────────────────────────────────────────────── */
 uint8_t Arducam_CaptureDecodeDisplay(void)
 {
-    /* ── 1. Trigger capture — same as teammate's flush/clear/start ── */
+    /* ── 1. Trigger capture ── */
     arducam_spi_write(ARDUCHIP_FIFO, FIFO_FLUSH);
     arducam_spi_write(ARDUCHIP_FIFO, FIFO_START);
 
-    /* ── 2. Wait for capture done — 3-second HAL_GetTick timeout ── */
+    /* ── 2. Wait for capture done  ── */
     uint32_t deadline = HAL_GetTick() + 3000U;
     while (!(arducam_spi_read(ARDUCHIP_TRIG) & CAP_DONE_MASK))
     {
@@ -178,7 +167,7 @@ uint8_t Arducam_CaptureDecodeDisplay(void)
         HAL_Delay(1);
     }
 
-    /* ── 3. Read FIFO length (same as teammate's read_fifo_length) ── */
+    /* ── 3. Read FIFO length ── */
     uint32_t len1   = arducam_spi_read(0x42);
     uint32_t len2   = arducam_spi_read(0x43);
     uint32_t len3   = arducam_spi_read(0x44) & 0x7FU;
@@ -186,8 +175,7 @@ uint8_t Arducam_CaptureDecodeDisplay(void)
 
     if (length == 0U || length > JPEG_BUF_MAX) return ARDUCAM_ERR_SIZE;
 
-    /* ── 4. Set RXFIFO threshold for 8-bit SPI on STM32L4 ─────────────
-          (teammate does this right before the burst read)             ── */
+    /* ── 4. Set RXFIFO threshold for 8-bit SPI on STM32L4  ── */
     SET_BIT(hspi3.Instance->CR2, SPI_RXFIFO_THRESHOLD_QF);
 
     /* ── 5. Burst read entire FIFO into buffer ── */
@@ -202,8 +190,7 @@ uint8_t Arducam_CaptureDecodeDisplay(void)
     HAL_GPIO_WritePin(ARDUCAM_CS_PORT, ARDUCAM_CS_PIN, GPIO_PIN_SET);
     s_jpeg_len = length;
 
-    /* ── 6. Find JPEG SOI marker 0xFF 0xD8 ─────────────────────────────
-          Same as teammate's alignment block, but we scan the buffer    ── */
+    /* ── 6. Find JPEG SOI marker 0xFF 0xD8 ───*/
     s_jpeg_start = 0;
     for (uint32_t i = 0; i + 1U < s_jpeg_len; i++)
     {
