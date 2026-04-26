@@ -89,9 +89,10 @@ static void MX_I2C3_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-// PID CODE
+// PID CODE FOR TEMP AND HUMIDITY
 #define AHT20_ADDRESS 0x38<<1
 float Temperature, Temperature_C, Humidity;
+// Initialize the sesnsor for humidity and temperature
 void AHT20_Init (void) {
 	HAL_Delay(40);
 		uint8_t status;
@@ -103,6 +104,7 @@ void AHT20_Init (void) {
 			HAL_Delay (10);
 		}
 }
+// Measures the temp and humidity from AHT20 Module
 void AHT20_Measure (void)
 {
 	uint8_t measure_command[3] = {0xAC, 0x33, 0x00};
@@ -128,12 +130,9 @@ Temperature_C = (float) (((TEMP_DATA/pow(2,20)) * 200) - 50);
 Temperature = (Temperature_C * 1.8f) + 32.0f;
 }
 
-
-
-
 #define LED_PORT GPIOE
 #define LED_PIN  GPIO_PIN_2
-
+// parameters for LCD screen objects
 typedef struct
 {
     uint16_t x;
@@ -151,7 +150,7 @@ static void LightLed_Set(uint8_t on)
     HAL_GPIO_WritePin(LED_PORT, LED_PIN, on ? GPIO_PIN_SET : GPIO_PIN_RESET);
 }
 
-/* ---------- Layout ---------- */
+/* ---------- Layout for LCD UI ---------- */
 #define TEMP_X      12
 #define TEMP_Y      12
 #define TEMP_W      220
@@ -515,7 +514,7 @@ static void UI_DrawBaskingStatus(uint8_t occupied)
 /* ─── Camera capture + display ─────────────────────────────────────────── */
 static void UI_CaptureAndShow(void)
 {
-    /* ── 1. Clear screen and draw header ── */
+    /* ── Clear screen and draw header ── */
     ST7796_FillScreen(ST7796_BLACK);
     ST7796_DrawString(10, 8, "TAP SCREEN OR PRESS BUTTON TO EXIT",
                       ST7796_WHITE, ST7796_BLACK, 1);
@@ -524,7 +523,7 @@ static void UI_CaptureAndShow(void)
     /* Show "capturing" message while we wait */
     ST7796_DrawString(160, 160, "CAPTURING...", ST7796_YELLOW, ST7796_BLACK, 2);
 
-    /* ── 2. Set display window for the image ── */
+    /* ── Set display window for the image ── */
     /*
      * Display is landscape 480x320.
      * Image is QVGA 320x240.
@@ -535,7 +534,7 @@ static void UI_CaptureAndShow(void)
 
     /* Open the address window on the ST7796 — sends CASET, RASET, RAMWR */
 
-    /* ── 3. Capture and stream directly to display ── */
+    /* ── Capture and stream directly to display ── */
     uint8_t result = Arducam_CaptureDecodeDisplay();
 
     if (result == ARDUCAM_ERR_TIMEOUT)
@@ -725,6 +724,7 @@ static void humidifier_update(uint32_t now_ms, float current_humidity, int desir
             break;
     }
 }
+// definitions for HX711 load cell module
 #define HX711_DOUT_PORT         GPIOD
 #define HX711_DOUT_PIN          GPIO_PIN_2
 #define HX711_SCK_PORT          GPIOH
@@ -920,6 +920,7 @@ int main(void)
    HAL_Delay(10);
 
    uint8_t cam_err = OV2640_JPEG_Init();
+// check if camera is properly setup
    if (cam_err != ARDUCAM_OK)
    {
        /* SPI to ArduCAM chip not working — show error and halt */
@@ -1023,7 +1024,7 @@ int main(void)
 	  {
 	      touchLatched = 0;
 	  }
-
+		// handler for the bluetooth remote
 	  if (bt_rx_ready)
 	  {
 	      uint8_t cmd  = bt_rx_byte;   /* snapshot before ISR overwrites */
@@ -1074,7 +1075,7 @@ int main(void)
 	              break;
 	      }
 	  }
-
+		// handler for the updating of humidity and temperature
 	  if (now - last_sensor_tick >= SENSOR_INTERVAL_MS)
 	      {
 	          last_sensor_tick = now;
@@ -1091,7 +1092,7 @@ int main(void)
 	              UI_Draw2DigitValue(HUM_X + 20, HUM_Y + 30, (int)Humidity, ST7796_WHITE);
 	          }
 	      }
-
+		// handler for updating of load cell
 	  if (now - last_hx711_tick >= HX711_SAMPLE_INTERVAL_MS)
 	      {
 	          last_hx711_tick = now;
